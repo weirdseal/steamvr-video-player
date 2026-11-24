@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use egui::{Align, Color32, Layout, Pos2, Rect, RichText, UiBuilder, Vec2};
+use egui::{Align, Layout, Pos2, Rect, RichText, UiBuilder, Vec2};
 use glow::HasContext as _;
 use openxr as xr;
 use winit::event_loop::EventLoopProxy;
@@ -18,37 +18,55 @@ use crate::icons::{Icon, IconButton};
 use crate::mpv::Playback;
 use crate::settings::Preferences;
 use crate::settings_ui::{self, SettingsPage};
+use crate::theme;
 use crate::ui::{self, Action, time_label};
 
 const WIDTH: f32 = 1.18;
 const PIXEL_WIDTH: u32 = 1040;
-const PLAYBACK_HEIGHT: u32 = 400;
+const PLAYBACK_HEIGHT: u32 = 206;
+const PLAYBACK_ERROR_HEIGHT: u32 = 250;
 const BROWSER_HEIGHT: u32 = 640;
+const SETTINGS_WIDTH: u32 = 860;
 const SETTINGS_HEIGHT: u32 = 520;
 const PANEL_GAP: u32 = 24;
 const PLAYBACK_TOP: u32 = BROWSER_HEIGHT + PANEL_GAP;
 // The compositor receives both panels at the same pose with a transparent gap.
-const SIZE: [u32; 2] = [PIXEL_WIDTH, PLAYBACK_TOP + PLAYBACK_HEIGHT];
+const SIZE: [u32; 2] = [PIXEL_WIDTH, PLAYBACK_TOP + PLAYBACK_ERROR_HEIGHT];
 const METERS_PER_PIXEL: f32 = WIDTH / PIXEL_WIDTH as f32;
 const PANEL_Z: f32 = -1.30;
-const PLAYBACK_Y: f32 = -0.35;
-const OVERLAY_Y: f32 = PLAYBACK_Y + PLAYBACK_TOP as f32 * METERS_PER_PIXEL * 0.5;
+const PLAYBACK_TOP_Y: f32 = -0.123;
+const OVERLAY_Y: f32 =
+    PLAYBACK_TOP_Y + (PLAYBACK_TOP as f32 - SIZE[1] as f32 * 0.5) * METERS_PER_PIXEL;
 const CURSOR_SIZE: u32 = 32;
 const CURSOR_WIDTH: f32 = CURSOR_SIZE as f32 * METERS_PER_PIXEL;
+const HOVER_REDRAW_INTERVAL: f64 = 1.0 / 45.0;
 const BROWSER_DRAG_THRESHOLD: f32 = 10.0;
-const ACCENT: Color32 = Color32::from_rgb(143, 202, 255);
 
 const BROWSER_RECT: Rect = Rect {
     min: Pos2::ZERO,
     max: Pos2::new(PIXEL_WIDTH as f32, BROWSER_HEIGHT as f32),
 };
 const SETTINGS_RECT: Rect = Rect {
-    min: Pos2::new(0.0, (BROWSER_HEIGHT - SETTINGS_HEIGHT) as f32),
-    max: BROWSER_RECT.max,
+    min: Pos2::new(
+        ((PIXEL_WIDTH - SETTINGS_WIDTH) / 2) as f32,
+        (BROWSER_HEIGHT - SETTINGS_HEIGHT) as f32,
+    ),
+    max: Pos2::new(
+        ((PIXEL_WIDTH + SETTINGS_WIDTH) / 2) as f32,
+        BROWSER_HEIGHT as f32,
+    ),
 };
 const PLAYBACK_RECT: Rect = Rect {
     min: Pos2::new(0.0, PLAYBACK_TOP as f32),
+    max: Pos2::new(PIXEL_WIDTH as f32, (PLAYBACK_TOP + PLAYBACK_HEIGHT) as f32),
+};
+const PLAYBACK_ERROR_RECT: Rect = Rect {
+    min: PLAYBACK_RECT.min,
     max: Pos2::new(PIXEL_WIDTH as f32, SIZE[1] as f32),
+};
+const SURFACE_RECT: Rect = Rect {
+    min: Pos2::ZERO,
+    max: PLAYBACK_ERROR_RECT.max,
 };
 
 fn point_at(aim: glam::Vec2) -> Pos2 {
@@ -85,9 +103,9 @@ enum PanelHit {
 }
 
 impl PanelHit {
-    fn at(aim: glam::Vec2, upper_panel: Option<Rect>) -> Option<Self> {
+    fn at(aim: glam::Vec2, playback_panel: Rect, upper_panel: Option<Rect>) -> Option<Self> {
         let point = point_at(aim);
-        if PLAYBACK_RECT.contains(point) {
+        if playback_panel.contains(point) {
             return Some(Self::Playback(point));
         }
         upper_panel
@@ -99,6 +117,25 @@ impl PanelHit {
         match self {
             Self::Playback(point) | Self::Upper(point) => point,
         }
+    }
+}
+
+fn preferred_hand(
+    current: Option<usize>,
+    aim: [Option<glam::Vec2>; 2],
+    hits: [Option<PanelHit>; 2],
+) -> Option<usize> {
+    current
+        .filter(|&hand| aim[hand].is_some())
+        .or_else(|| hits.iter().position(Option::is_some))
+        .or_else(|| aim.iter().position(Option::is_some))
+}
+
+fn playback_panel_rect(playback: &Playback) -> Rect {
+    if playback.error.is_some() {
+        PLAYBACK_ERROR_RECT
+    } else {
+        PLAYBACK_RECT
     }
 }
 
@@ -115,6 +152,8 @@ struct PanelSurface<'a> {
     painter: egui_glow::Painter,
     egui: egui::Context,
     repaint_at: f64,
+    hover_pointer: Option<Pos2>,
+    hover_at: f64,
 }
 
 impl<'a> PanelSurface<'a> {
@@ -132,24 +171,33 @@ impl<'a> PanelSurface<'a> {
             style.animation_time = 0.0;
             style.spacing.item_spacing = Vec2::new(12.0, 10.0);
             style.spacing.scroll.floating = false;
+            style.spacing.scroll.bar_width = 12.0;
         });
         Ok(Self {
             images,
             painter,
             egui,
             repaint_at: f64::INFINITY,
+            hover_pointer: None,
+            hover_at: 0.0,
         })
+    }
+
+    fn hover_changed(&self, pointer: Option<Pos2>, time: f64) -> bool {
+        self.hover_pointer != pointer
+            && (time >= self.hover_at || self.hover_pointer.is_none() || pointer.is_none())
     }
 
     fn draw(
         &mut self,
         time: f64,
         pointer: Option<Pos2>,
+        raster_cursor: Option<Pos2>,
         click: Option<Pos2>,
         mut contents: impl FnMut(&mut egui::Ui),
     ) -> Result<()> {
         let mut input = egui::RawInput {
-            screen_rect: Some(PLAYBACK_RECT.union(BROWSER_RECT)),
+            screen_rect: Some(SURFACE_RECT),
             time: Some(time),
             max_texture_side: Some(self.painter.max_texture_side()),
             ..Default::default()
@@ -172,17 +220,13 @@ impl<'a> PanelSurface<'a> {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, &mut contents);
-            if let Some(point) = pointer {
+            if let Some(point) = raster_cursor {
                 let cursor = ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Foreground,
                     egui::Id::new("controller-cursor"),
                 ));
-                cursor.circle_filled(point, 8.0, Color32::from_rgb(150, 224, 255));
-                cursor.circle_stroke(
-                    point,
-                    8.0,
-                    egui::Stroke::new(2.0_f32, Color32::from_rgb(14, 21, 34)),
-                );
+                cursor.circle_filled(point, 8.0, egui::Color32::WHITE);
+                cursor.circle_stroke(point, 8.0, egui::Stroke::new(2.0_f32, egui::Color32::BLACK));
             }
         });
         self.repaint_at = output
@@ -191,6 +235,8 @@ impl<'a> PanelSurface<'a> {
             .map_or(f64::INFINITY, |output| {
                 time + output.repaint_delay.as_secs_f64()
             });
+        self.hover_pointer = pointer;
+        self.hover_at = time + HOVER_REDRAW_INTERVAL;
         let fbo = self.images.acquire()?;
         let gl = self.painter.gl();
         unsafe {
@@ -313,7 +359,7 @@ enum PanelAction {
 #[derive(PartialEq)]
 struct PanelImage {
     playback: Playback,
-    pointer: Option<Pos2>,
+    raster_cursor: Option<Pos2>,
     scrubbing: bool,
     browser_revision: Option<u64>,
     settings_page: Option<SettingsPage>,
@@ -322,7 +368,7 @@ struct PanelImage {
 
 #[derive(Clone, Copy)]
 pub(super) struct PanelFrame {
-    pub outside_pointer: Option<glam::Vec2>,
+    pub cursor: Option<glam::Vec2>,
     pub browser_visible: bool,
 }
 
@@ -389,17 +435,26 @@ impl<'a> PlaybackPanel<'a> {
     pub fn cancel_gestures(&mut self) {
         self.scrub = None;
         self.browser_drag = None;
+        self.pointing_hand = None;
     }
 
     pub fn browser_aimed(&self, hands: &[Hand; 2]) -> bool {
-        self.browser.is_some()
-            && self.scrub.is_none()
-            && (self.browser_drag.is_some()
-                || hands
-                    .iter()
-                    .filter_map(|hand| hand.aim.and_then(aim_on_plane))
-                    .find_map(|point| PanelHit::at(point, Some(BROWSER_RECT)))
-                    .is_some_and(|hit| matches!(hit, PanelHit::Upper(_))))
+        if self.browser.is_none() || self.scrub.is_some() {
+            return false;
+        }
+        if self.browser_drag.is_some() {
+            return true;
+        }
+        let playback_panel = self
+            .last_image
+            .as_ref()
+            .map_or(PLAYBACK_RECT, |image| playback_panel_rect(&image.playback));
+        let aim = hands.map(|hand| hand.aim.and_then(aim_on_plane));
+        let hits = aim.map(|point| {
+            point.and_then(|point| PanelHit::at(point, playback_panel, Some(BROWSER_RECT)))
+        });
+        preferred_hand(self.pointing_hand, aim, hits)
+            .is_some_and(|hand| matches!(hits[hand], Some(PanelHit::Upper(_))))
     }
 
     pub fn update(
@@ -421,14 +476,12 @@ impl<'a> PlaybackPanel<'a> {
             browser.preferences(preferences);
             browser.entries_rect()
         });
-        let aim = hands.map(|hand| hand.aim.and_then(aim_on_plane));
-        let hits = aim.map(|point| point.and_then(|point| PanelHit::at(point, upper_panel)));
-        let mut pointing_hand = hits
-            .iter()
-            .position(Option::is_some)
-            .or(self.pointing_hand.filter(|&hand| aim[hand].is_some()))
-            .or_else(|| aim.iter().position(Option::is_some));
         let mut playback = video.lock().unwrap().playback.clone();
+        let playback_panel = playback_panel_rect(&playback);
+        let aim = hands.map(|hand| hand.aim.and_then(aim_on_plane));
+        let hits = aim
+            .map(|point| point.and_then(|point| PanelHit::at(point, playback_panel, upper_panel)));
+        let mut pointing_hand = preferred_hand(self.pointing_hand, aim, hits);
         if self
             .scrub
             .is_some_and(|scrub| scrub.generation != playback.generation())
@@ -518,12 +571,19 @@ impl<'a> PlaybackPanel<'a> {
         let hit = aimed.and_then(|point| {
             PanelHit::at(
                 point,
+                playback_panel,
                 upper_panel_rect(self.browser.is_some(), self.settings_page.is_some()),
             )
         });
-        let pointer = hit
-            .map(PanelHit::point)
-            .map(|point| Pos2::new(point.x.floor(), point.y.floor()));
+        let pointer = hit.map(PanelHit::point);
+        // Keep the compositor cursor independent of the panel redraw rate.
+        let raster_cursor = if self.cursor.is_none() {
+            aimed
+                .map(point_at)
+                .filter(|point| SURFACE_RECT.contains(*point))
+        } else {
+            None
+        };
         let scrubbing = self.scrub.is_some();
         if self.last_image.is_none()
             || !visible
@@ -548,7 +608,7 @@ impl<'a> PlaybackPanel<'a> {
         }
         let display = PanelImage {
             playback,
-            pointer,
+            raster_cursor,
             scrubbing,
             browser_revision: self.browser.as_ref().map(FileBrowser::revision),
             settings_page: self.settings_page,
@@ -558,13 +618,12 @@ impl<'a> PlaybackPanel<'a> {
         let thumbnails_ready = browser_visible
             && preferences.browser_view == crate::settings::BrowserView::Grid
             && self.thumbnails.poll(&self.surface.egui);
-        let displayed_upper_panel =
-            upper_panel_rect(browser_visible, display.settings_page.is_some());
         let time = now.duration_since(self.started).as_secs_f64();
         if click.is_some()
             || committed.is_some()
             || thumbnails_ready
             || self.last_image.as_ref() != Some(&display)
+            || self.surface.hover_changed(pointer, time)
             || time >= self.surface.repaint_at
         {
             let mut action = committed.map(|seconds| PanelAction::Playback(Action::Seek(seconds)));
@@ -573,25 +632,26 @@ impl<'a> PlaybackPanel<'a> {
             let mut settings_page = self.settings_page;
             let mut edited = preferences;
             let browser = &mut self.browser;
-            self.surface.draw(time, pointer, click, |ui| {
-                if let Some(browser) = browser {
-                    draw_section(ui, "browser", BROWSER_RECT, |ui| {
-                        browser_action =
-                            browser.draw(ui, preferences.language, &mut self.thumbnails);
-                    });
-                } else if let Some(page) = &mut settings_page {
-                    let mut close = false;
-                    draw_section(ui, "settings", SETTINGS_RECT, |ui| {
-                        close = draw_settings(ui, &mut edited, page);
-                    });
-                    if close {
-                        settings_page = None;
+            self.surface
+                .draw(time, pointer, raster_cursor, click, |ui| {
+                    if let Some(browser) = browser {
+                        draw_section(ui, "browser", BROWSER_RECT, |ui| {
+                            browser_action =
+                                browser.draw(ui, preferences.language, &mut self.thumbnails);
+                        });
+                    } else if let Some(page) = &mut settings_page {
+                        let mut close = false;
+                        draw_section(ui, "settings", SETTINGS_RECT, |ui| {
+                            close = draw_settings(ui, &mut edited, page);
+                        });
+                        if close {
+                            settings_page = None;
+                        }
                     }
-                }
-                draw_section(ui, "playback", PLAYBACK_RECT, |ui| {
-                    timeline = Some(draw_playback(ui, &display, &mut action));
-                });
-            })?;
+                    draw_section(ui, "playback", playback_panel, |ui| {
+                        timeline = Some(draw_playback(ui, &display, &mut action));
+                    });
+                })?;
             self.timeline = timeline;
             self.settings_page = settings_page;
             if let Some(action) = action {
@@ -642,8 +702,7 @@ impl<'a> PlaybackPanel<'a> {
             self.last_image = Some(display);
         }
         Ok(Some(PanelFrame {
-            outside_pointer: aimed
-                .filter(|&point| PanelHit::at(point, displayed_upper_panel).is_none()),
+            cursor: aimed.filter(|_| self.cursor.is_some()),
             browser_visible,
         }))
     }
@@ -691,7 +750,7 @@ fn create_cursor<'a>(
 
 fn draw_section(ui: &mut egui::Ui, id: &str, bounds: Rect, contents: impl FnOnce(&mut egui::Ui)) {
     ui.painter()
-        .rect_filled(bounds, 0.0, Color32::from_rgb(23, 30, 42));
+        .rect_filled(bounds, 14, theme::COLORS.background);
     ui.scope_builder(
         UiBuilder::new()
             .id_salt(id)
@@ -714,7 +773,7 @@ fn draw_settings(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(language.text(Text::Settings))
-                .size(29.0)
+                .size(28.0)
                 .strong(),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -733,203 +792,265 @@ fn draw_playback(
     action: &mut Option<PanelAction>,
 ) -> Rect {
     let playback = &display.playback;
-    let scrubbing = display.scrubbing;
-    let browser_open = display.browser_revision.is_some();
-    let text = |key| display.preferences.language.text(key);
-    ui.horizontal(|ui| {
-        let button_size = [58.0, 48.0];
-        let title_width =
-            ui.available_width() - 2.0 * (button_size[0] + ui.spacing().item_spacing.x);
-        ui.allocate_ui_with_layout(
-            Vec2::new(title_width, 48.0),
-            Layout::left_to_right(Align::Center),
-            |ui| {
-                ui.set_min_width(title_width);
-                if let Some(title) = playback.title() {
-                    ui.add(
-                        egui::Label::new(RichText::new(title.as_ref()).size(33.0).strong())
-                            .truncate(),
-                    );
-                }
-            },
-        );
-        let label = if browser_open {
-            text(Text::CloseFileBrowser)
-        } else {
-            text(Text::OpenFileBrowser)
-        };
-        if ui
-            .add(
-                IconButton::new(Icon::Folder, label)
-                    .size(button_size)
-                    .selected(browser_open),
-            )
-            .clicked()
-        {
-            *action = Some(PanelAction::ToggleBrowser);
-        }
-        if ui
-            .add(
-                IconButton::new(Icon::Settings, text(Text::Settings))
-                    .size(button_size)
-                    .selected(display.settings_page.is_some()),
-            )
-            .clicked()
-        {
-            *action = Some(PanelAction::ToggleSettings);
-        }
-    });
+    let language = display.preferences.language;
+    let colors = &theme::COLORS;
+    let title = playback.title();
+    let title = if playback.loading {
+        language.text(Text::VideoOpening)
+    } else {
+        title.as_deref().unwrap_or_default()
+    };
+    ui.add_sized(
+        [ui.available_width(), 35.0],
+        egui::Label::new(RichText::new(title).size(28.0).strong())
+            .halign(Align::Min)
+            .truncate(),
+    );
+
     let hours = playback
         .duration
         .unwrap_or(0.0)
         .max(playback.position.unwrap_or(0.0))
         >= 3600.0;
-    let time = if playback.loading {
-        text(Text::VideoOpening).to_owned()
-    } else {
-        format!(
-            "{}  /  {}",
-            time_label(playback.position, hours),
-            time_label(playback.duration, hours),
+    let time_width = if hours { 116.0 } else { 78.0 };
+    let time = |seconds| {
+        egui::Label::new(
+            RichText::new(time_label(seconds, hours))
+                .monospace()
+                .size(21.0)
+                .color(colors.muted),
         )
     };
-    ui.label(RichText::new(time).size(30.0).strong());
-
-    let (timeline, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), egui::Sense::hover());
+    let timeline = ui
+        .horizontal(|ui| {
+            ui.add_sized([time_width, 40.0], time(playback.position));
+            let width = ui.available_width() - time_width - ui.spacing().item_spacing.x;
+            let (timeline, _) =
+                ui.allocate_exact_size(Vec2::new(width, 40.0), egui::Sense::hover());
+            ui.add_sized([time_width, 40.0], time(playback.duration));
+            timeline
+        })
+        .inner;
+    let track = timeline.shrink2(Vec2::new(0.0, 17.0));
     let fraction = playback
         .duration
         .filter(|duration| *duration > 0.0)
         .map_or(0.0, |duration| playback.position.unwrap_or(0.0) / duration);
-    let track = timeline.shrink2(Vec2::new(0.0, 13.0));
-    let cursor_x = egui::lerp(track.x_range(), fraction.clamp(0.0, 1.0) as f32);
-    let seekable = playback.loaded && playback.seekable;
-    let can_scrub = seekable && playback.duration.is_some();
-    let fill = if can_scrub {
-        ACCENT
-    } else {
-        Color32::from_rgb(78, 91, 113)
-    };
-    ui.painter()
-        .rect_filled(track, 5.0, Color32::from_rgb(48, 58, 75));
-    ui.painter()
-        .rect_filled(track.with_max_x(cursor_x), 5.0, fill);
-    if can_scrub {
-        ui.painter().circle_filled(
-            Pos2::new(cursor_x, track.center().y),
-            if scrubbing { 14.0 } else { 11.0 },
-            ACCENT,
-        );
+    let x = egui::lerp(track.x_range(), fraction.clamp(0.0, 1.0) as f32);
+    ui.painter().rect_filled(track, 3, colors.track);
+    if playback.loaded && playback.seekable && playback.duration.is_some() {
+        ui.painter()
+            .rect_filled(track.with_max_x(x), 3, colors.accent);
+        let center = Pos2::new(x, track.center().y);
+        let radius = if display.scrubbing { 12.0 } else { 10.0 };
+        ui.painter().circle_filled(center, radius, colors.accent);
+        ui.painter()
+            .circle_filled(center, radius - 3.0, colors.background);
     }
 
-    ui.horizontal(|ui| {
-        let (play_icon, play_label) = if playback.paused || playback.eof || !playback.loaded {
-            (Icon::Play, text(Text::Play))
-        } else {
-            (Icon::Pause, text(Text::Pause))
-        };
-        let width = (ui.available_width() - 4.0 * ui.spacing().item_spacing.x) / 5.0;
-        let size = [width, 60.0];
-        let amount = display.preferences.vr_seek;
-        for (icon, label, enabled, command) in [
-            (
-                Some(Icon::Previous),
-                text(Text::PreviousVideo).to_owned(),
-                !playback.loading && playback.nearby.previous.is_some(),
-                Action::PreviousFile,
-            ),
-            (
-                None,
-                format!("−{amount}{}", text(Text::SecondsSuffix)),
-                seekable,
-                Action::SeekBy(-f64::from(amount)),
-            ),
-            (
-                Some(play_icon),
-                play_label.to_owned(),
-                playback.loaded,
-                Action::TogglePause,
-            ),
-            (
-                None,
-                format!("+{amount}{}", text(Text::SecondsSuffix)),
-                seekable,
-                Action::SeekBy(f64::from(amount)),
-            ),
-            (
-                Some(Icon::Next),
-                text(Text::NextVideo).to_owned(),
-                !playback.loading && playback.nearby.next.is_some(),
-                Action::NextFile,
-            ),
-        ] {
-            let response = if let Some(icon) = icon {
-                let button = IconButton::new(icon, &label).size(size);
-                let button = if matches!(command, Action::TogglePause) {
-                    button.primary()
+    let scale = 1.5;
+    let (side, center) = ui::transport_sizes(ui, scale);
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), center.y),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.allocate_ui_with_layout(side, Layout::left_to_right(Align::Center), |ui| {
+                ui.set_min_width(side.x);
+                draw_volume(ui, playback, display.preferences, action);
+            });
+            ui.allocate_ui_with_layout(center, Layout::left_to_right(Align::Center), |ui| {
+                if let Some(command) = ui::playback_buttons(
+                    ui,
+                    playback,
+                    language,
+                    display.preferences.vr_seek,
+                    scale,
+                    false,
+                ) {
+                    *action = Some(PanelAction::Playback(command));
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let button_size = [52.0, 49.0];
+                if ui
+                    .add(
+                        IconButton::new(Icon::Settings, language.text(Text::Settings))
+                            .selected(display.settings_page.is_some())
+                            .size(button_size),
+                    )
+                    .clicked()
+                {
+                    *action = Some(PanelAction::ToggleSettings);
+                }
+                let browser_open = display.browser_revision.is_some();
+                let label = language.text(if browser_open {
+                    Text::CloseFileBrowser
                 } else {
-                    button
-                };
-                ui.add_enabled(enabled, button)
-            } else {
-                ui.add_enabled(
-                    enabled,
-                    egui::Button::new(RichText::new(label).size(29.0)).min_size(size.into()),
-                )
-            };
-            if response.clicked() {
-                *action = Some(PanelAction::Playback(command));
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("{}  {:3.0}%", text(Text::Volume), playback.volume))
-                .size(29.0)
-                .strong(),
-        );
-        let amount = display.preferences.volume_step;
-        for (prefix, sign) in [("−", -1.0), ("+", 1.0)] {
-            if ui
-                .add_sized(
-                    [154.0, 53.0],
-                    egui::Button::new(RichText::new(format!("{prefix}{amount}%")).size(27.0)),
-                )
-                .clicked()
-            {
-                *action = Some(PanelAction::Playback(Action::VolumeBy(
-                    f64::from(amount) * sign,
-                )));
-            }
-        }
-        let (icon, label) = if playback.muted {
-            (Icon::Muted, text(Text::Unmute))
-        } else {
-            (Icon::Volume, text(Text::Mute))
-        };
-        if ui
-            .add(IconButton::new(icon, label).size([86.0, 53.0]))
-            .clicked()
-        {
-            *action = Some(PanelAction::Playback(Action::ToggleMute));
-        }
-    });
+                    Text::OpenFileBrowser
+                });
+                if ui
+                    .add(
+                        IconButton::new(Icon::Folder, label)
+                            .selected(browser_open)
+                            .size(button_size),
+                    )
+                    .clicked()
+                {
+                    *action = Some(PanelAction::ToggleBrowser);
+                }
+                let exit = language.text(Text::ExitVr);
+                if ui
+                    .add(
+                        IconButton::new(Icon::Close, exit)
+                            .caption(exit)
+                            .size([132.0, 49.0]),
+                    )
+                    .clicked()
+                {
+                    *action = Some(PanelAction::Playback(Action::ExitVr));
+                }
+            });
+        },
+    );
     if let Some(error) = playback.error.as_deref() {
-        ui.add(
-            egui::Label::new(
-                RichText::new(error)
-                    .size(23.0)
-                    .color(Color32::from_rgb(255, 173, 157)),
-            )
-            .truncate(),
-        );
+        ui.add(egui::Label::new(RichText::new(error).size(22.0).color(colors.text)).truncate());
     }
     timeline
+}
+
+fn draw_volume(
+    ui: &mut egui::Ui,
+    playback: &Playback,
+    preferences: Preferences,
+    action: &mut Option<PanelAction>,
+) {
+    let colors = &theme::COLORS;
+    let (icon, key) = if playback.muted {
+        (Icon::Muted, Text::Unmute)
+    } else {
+        (Icon::Volume, Text::Mute)
+    };
+    let size = Vec2::new(46.0, 45.0);
+    let step = f64::from(preferences.volume_step);
+    ui.spacing_mut().item_spacing.x = 4.0;
+    if ui
+        .add(IconButton::new(icon, preferences.language.text(key)).size(size))
+        .clicked()
+    {
+        *action = Some(PanelAction::Playback(Action::ToggleMute));
+    }
+    if ui
+        .add(IconButton::new(Icon::Minus, &format!("−{step:.0}%")).size(size))
+        .clicked()
+    {
+        *action = Some(PanelAction::Playback(Action::VolumeBy(-step)));
+    }
+
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(78.0, size.y), egui::Sense::hover());
+    response.on_hover_text(preferences.language.text(Text::Volume));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{:.0}%", playback.volume),
+        egui::FontId::monospace(21.0),
+        colors.text,
+    );
+
+    if ui
+        .add(IconButton::new(Icon::Plus, &format!("+{step:.0}%")).size(size))
+        .clicked()
+    {
+        *action = Some(PanelAction::Playback(Action::VolumeBy(step)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_vr_button_requests_a_stop() {
+        let ctx = egui::Context::default();
+        ui::configure(&ctx);
+        let display = PanelImage {
+            playback: Playback::default(),
+            raster_cursor: None,
+            scrubbing: false,
+            browser_revision: None,
+            settings_page: None,
+            preferences: Preferences::default(),
+        };
+        let mut action = None;
+        let mut draw = |ctx: &egui::Context| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                draw_section(ui, "playback", PLAYBACK_RECT, |ui| {
+                    draw_playback(ui, &display, &mut action);
+                });
+            });
+        };
+        let mut input = egui::RawInput {
+            screen_rect: Some(SURFACE_RECT),
+            ..Default::default()
+        };
+        let output = ctx.run(input.clone(), &mut draw);
+        let caption = display.preferences.language.text(Text::ExitVr);
+        let button_point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == caption => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("The VR exit caption is visible");
+        assert!(PLAYBACK_RECT.contains(button_point));
+        input.events.push(egui::Event::PointerMoved(button_point));
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: button_point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+
+        let _ = ctx.run(input, draw);
+        assert!(matches!(
+            action,
+            Some(PanelAction::Playback(Action::ExitVr))
+        ));
+    }
+
+    #[test]
+    fn pointer_keeps_its_hand_across_the_panel_edge() {
+        let aim = [Some(glam::Vec2::ZERO), Some(glam::Vec2::new(-0.4, -0.3))];
+        let hits = |aim: [Option<glam::Vec2>; 2]| {
+            aim.map(|point| {
+                point.and_then(|point| PanelHit::at(point, PLAYBACK_RECT, Some(BROWSER_RECT)))
+            })
+        };
+        let both_aimed = hits(aim);
+        assert!(both_aimed.iter().all(Option::is_some));
+        assert_eq!(preferred_hand(Some(1), aim, both_aimed), Some(1));
+
+        let left_beyond_edge = [aim[0], Some(glam::Vec2::new(-0.65, -0.3))];
+        let only_right_aimed = hits(left_beyond_edge);
+        assert!(only_right_aimed[1].is_none());
+        assert_eq!(
+            preferred_hand(Some(1), left_beyond_edge, only_right_aimed),
+            Some(1)
+        );
+        assert_eq!(
+            preferred_hand(None, left_beyond_edge, only_right_aimed),
+            Some(0)
+        );
+        let left_disconnected = [aim[0], None];
+        assert_eq!(
+            preferred_hand(Some(1), left_disconnected, hits(left_disconnected)),
+            Some(0)
+        );
+    }
 
     #[test]
     fn aim_distinguishes_the_two_panels_and_the_gap() {
@@ -939,29 +1060,41 @@ mod tests {
                 OVERLAY_Y + (SIZE[1] as f32 * 0.5 - y) * METERS_PER_PIXEL,
             )
         };
-        let playback = glam::Vec2::new(0.0, PLAYBACK_Y);
+        let playback = aim_at_y(PLAYBACK_RECT.center().y);
         let browser = aim_at_y(BROWSER_RECT.center().y);
         let gap = aim_at_y((BROWSER_RECT.bottom() + PLAYBACK_RECT.top()) * 0.5);
         assert!(
-            matches!(PanelHit::at(playback, Some(BROWSER_RECT)), Some(PanelHit::Playback(point))
+            matches!(PanelHit::at(playback, PLAYBACK_RECT, Some(BROWSER_RECT)), Some(PanelHit::Playback(point))
             if point.distance(PLAYBACK_RECT.center()) < 0.001)
         );
         assert!(
-            matches!(PanelHit::at(browser, Some(BROWSER_RECT)), Some(PanelHit::Upper(point))
+            matches!(PanelHit::at(browser, PLAYBACK_RECT, Some(BROWSER_RECT)), Some(PanelHit::Upper(point))
             if point.distance(BROWSER_RECT.center()) < 0.001)
         );
-        assert_eq!(PanelHit::at(browser, None), None);
-        assert_eq!(PanelHit::at(gap, Some(BROWSER_RECT)), None);
+        assert_eq!(PanelHit::at(browser, PLAYBACK_RECT, None), None);
+        assert_eq!(PanelHit::at(gap, PLAYBACK_RECT, Some(BROWSER_RECT)), None);
 
         let above_settings = aim_at_y(SETTINGS_RECT.top() * 0.5);
         assert!(matches!(
-            PanelHit::at(above_settings, upper_panel_rect(true, false)),
+            PanelHit::at(above_settings, PLAYBACK_RECT, upper_panel_rect(true, false)),
             Some(PanelHit::Upper(_))
         ));
         assert_eq!(
-            PanelHit::at(above_settings, upper_panel_rect(false, true)),
+            PanelHit::at(above_settings, PLAYBACK_RECT, upper_panel_rect(false, true)),
             None
         );
+
+        let footer = aim_at_y((PLAYBACK_RECT.bottom() + PLAYBACK_ERROR_RECT.bottom()) * 0.5);
+        let mut state = Playback::default();
+        assert_eq!(
+            PanelHit::at(footer, playback_panel_rect(&state), None),
+            None
+        );
+        state.set_error("Example playback error".to_owned());
+        assert!(matches!(
+            PanelHit::at(footer, playback_panel_rect(&state), None),
+            Some(PanelHit::Playback(_))
+        ));
     }
 
     #[test]

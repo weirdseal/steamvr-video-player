@@ -8,6 +8,7 @@ mod icons;
 mod mpv;
 mod settings;
 mod settings_ui;
+mod theme;
 mod ui;
 mod vr;
 

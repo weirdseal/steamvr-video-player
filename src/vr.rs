@@ -449,7 +449,7 @@ fn run_session(
                 let view = &controllers.view;
                 let panel_layer = panel.layer(view);
                 if let Some(cursor_layer) = frame
-                    .outside_pointer
+                    .cursor
                     .and_then(|point| panel.cursor_layer(view, point))
                 {
                     (

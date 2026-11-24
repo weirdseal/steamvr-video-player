@@ -23,7 +23,7 @@ use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{Fullscreen, Theme, Window, WindowId};
 
 use crate::files::{self, VIDEO_EXTENSIONS};
 use crate::graphics::{Triangle, Video, check_opengl};
@@ -174,6 +174,7 @@ impl Desktop {
                 .with_title(APP_NAME)
                 .with_inner_size(LogicalSize::new(1080, 720))
                 .with_min_inner_size(LogicalSize::new(570, 390))
+                .with_theme(Some(Theme::Dark))
                 .with_visible(false),
         )?;
         let handle = window.window_handle()?.as_raw();
@@ -568,6 +569,7 @@ impl Desktop {
             Action::ToggleVr if self.mpv.is_some() && self.ui.phase.can_toggle() => {
                 self.toggle_vr()
             }
+            Action::ExitVr => self.stop_vr(),
             _ => {}
         }
     }
@@ -588,33 +590,40 @@ impl Desktop {
     }
 
     fn toggle_vr(&mut self) {
-        if let Some(worker) = &self.vr {
-            worker.stop();
-            self.ui.phase = VrPhase::Stopping;
-        } else {
-            self.ui.vr_error = None;
-            self.ui.runtime = None;
-            let start = self
-                .video
-                .start_sharing(&self.ui.playback)
-                .and_then(|source| Worker::start(source, self.proxy.clone()));
-            match start {
-                Ok(worker) => {
-                    self.vr = Some(worker);
-                    self.ui.phase = VrPhase::Starting;
-                    log::info!(
-                        "VR start requested: position={:?}, paused={}",
-                        self.ui.playback.position,
-                        self.ui.playback.paused
-                    );
-                }
-                Err(error) => {
-                    self.video.stop_sharing();
-                    self.ui.vr_error = Some(format!("{} ({error:#})", tr(Text::VrStartFailed)));
-                }
+        if self.vr.is_some() {
+            self.stop_vr();
+            return;
+        }
+        self.ui.vr_error = None;
+        self.ui.runtime = None;
+        let start = self
+            .video
+            .start_sharing(&self.ui.playback)
+            .and_then(|source| Worker::start(source, self.proxy.clone()));
+        match start {
+            Ok(worker) => {
+                self.vr = Some(worker);
+                self.ui.phase = VrPhase::Starting;
+                log::info!(
+                    "VR start requested: position={:?}, paused={}",
+                    self.ui.playback.position,
+                    self.ui.playback.paused
+                );
+            }
+            Err(error) => {
+                self.video.stop_sharing();
+                self.ui.vr_error = Some(format!("{} ({error:#})", tr(Text::VrStartFailed)));
             }
         }
         self.window.request_redraw();
+    }
+
+    fn stop_vr(&mut self) {
+        if let Some(worker) = &self.vr {
+            worker.stop();
+            self.ui.phase = VrPhase::Stopping;
+            self.window.request_redraw();
+        }
     }
 
     fn shared_context(&self, requirements: openxr::opengl::Requirements) -> Result<vr::WglContext> {

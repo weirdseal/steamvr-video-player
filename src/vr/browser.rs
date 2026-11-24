@@ -6,7 +6,7 @@ use std::thread;
 use egui::scroll_area::ScrollSource;
 use egui::{
     Align, Button, Color32, FontId, Label, Layout, Rect, Response, RichText, ScrollArea, Sense,
-    Shape, Stroke, StrokeKind, TextWrapMode, Ui, Vec2, WidgetText, pos2, vec2,
+    TextWrapMode, Ui, Vec2, WidgetText, pos2, vec2,
 };
 
 use super::thumbnails::Thumbnails;
@@ -16,14 +16,12 @@ use crate::icons::{Icon, IconButton};
 use crate::mpv::thumbnail;
 use crate::settings::{BrowserView, Preferences};
 use crate::settings_ui::sort_controls;
+use crate::theme;
 
 const GRID_COLUMNS: usize = 3;
 const TILE_HEIGHT: f32 = 146.0;
 const PREVIEW_HEIGHT: f32 = 102.0;
-const ROW_HEIGHT: f32 = 46.0;
-const ROW_SPACING: f32 = 8.0;
-const FOLDER_COLOR: Color32 = Color32::from_rgb(154, 204, 255);
-const VIDEO_COLOR: Color32 = Color32::from_rgb(130, 212, 196);
+const ROW_HEIGHT: f32 = 44.0;
 
 impl BrowserView {
     fn columns(self) -> usize {
@@ -41,7 +39,14 @@ impl BrowserView {
     }
 
     fn row_pitch(self) -> f32 {
-        self.row_height() + ROW_SPACING
+        self.row_height() + self.row_spacing()
+    }
+
+    fn row_spacing(self) -> f32 {
+        match self {
+            Self::List => 3.0,
+            Self::Grid => 10.0,
+        }
     }
 }
 
@@ -123,7 +128,7 @@ impl FileBrowser {
             return 0.0;
         };
         let rows = entries.len().div_ceil(self.view.columns());
-        (rows as f32 * self.view.row_pitch() - ROW_SPACING - viewport.height()).max(0.0)
+        (rows as f32 * self.view.row_pitch() - self.view.row_spacing() - viewport.height()).max(0.0)
     }
 
     fn set_offset(&mut self, offset: f32) {
@@ -184,123 +189,141 @@ impl FileBrowser {
             Location::Drives => None,
             Location::Folder(path) => Some(path.as_path()),
         };
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    folder.is_some(),
-                    IconButton::new(Icon::Up, text(Text::ParentFolder)).size([52.0, 46.0]),
-                )
-                .clicked()
-            {
-                let parent = folder.and_then(Path::parent).filter(|path| path.has_root());
-                action = Some(BrowserAction::Browse(
-                    parent.map_or(Location::Drives, |path| {
-                        Location::Folder(path.to_path_buf())
-                    }),
-                ));
-            }
-            if ui
-                .add_enabled(
-                    folder.is_some(),
-                    IconButton::new(Icon::Drive, text(Text::Drives)).size([52.0, 46.0]),
-                )
-                .clicked()
-            {
-                action = Some(BrowserAction::Browse(Location::Drives));
-            }
-            ui.separator();
-            ui.label(RichText::new(text(Text::Sort)).size(23.0));
-            let mut sort = self.sort;
-            sort_controls(ui, &mut sort, language, 1.53);
-            if sort != self.sort {
-                action = Some(BrowserAction::Sort(sort));
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let tool_size = [48.0, 44.0];
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 46.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
                 if ui
-                    .add(IconButton::new(Icon::Close, text(Text::Close)).size([52.0, 46.0]))
+                    .add_enabled(
+                        folder.is_some(),
+                        IconButton::new(Icon::Up, text(Text::ParentFolder)).size(tool_size),
+                    )
                     .clicked()
                 {
-                    action = Some(BrowserAction::Close);
+                    let parent = folder.and_then(Path::parent).filter(|path| path.has_root());
+                    action = Some(BrowserAction::Browse(
+                        parent.map_or(Location::Drives, |path| {
+                            Location::Folder(path.to_path_buf())
+                        }),
+                    ));
                 }
-                for (view, icon, label) in [
-                    (BrowserView::Grid, Icon::Grid, text(Text::GridView)),
-                    (BrowserView::List, Icon::List, text(Text::ListView)),
-                ] {
+                if ui
+                    .add_enabled(
+                        folder.is_some(),
+                        IconButton::new(Icon::Drive, text(Text::Drives)).size(tool_size),
+                    )
+                    .clicked()
+                {
+                    action = Some(BrowserAction::Browse(Location::Drives));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .add(
-                            IconButton::new(icon, label)
-                                .size([52.0, 46.0])
-                                .selected(self.view == view),
-                        )
+                        .add(IconButton::new(Icon::Close, text(Text::Close)).size(tool_size))
                         .clicked()
                     {
-                        action = Some(BrowserAction::View(view));
+                        action = Some(BrowserAction::Close);
                     }
-                }
-            });
-        });
-        draw_location(ui, folder, language);
-        let viewport_height = ui.available_height();
-        let mut offset = self.offset;
-        self.entries_rect = None;
-        ui.allocate_ui_with_layout(
-            Vec2::new(ui.available_width(), viewport_height),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.set_min_height(viewport_height);
-                ui.spacing_mut().item_spacing.y = ROW_SPACING;
-                match &self.listing {
-                    Listing::Loading(_) => {
-                        ui.label(RichText::new(text(Text::FolderReading)).size(25.0));
-                    }
-                    Listing::Failed(error) => {
-                        ui.add(
-                            Label::new(
-                                RichText::new(format!(
-                                    "{} ({error})",
-                                    text(Text::FolderOpenFailed)
-                                ))
-                                .size(25.0),
+                    for (view, icon, label) in [
+                        (BrowserView::Grid, Icon::Grid, text(Text::GridView)),
+                        (BrowserView::List, Icon::List, text(Text::ListView)),
+                    ] {
+                        if ui
+                            .add(
+                                IconButton::new(icon, label)
+                                    .size(tool_size)
+                                    .selected(self.view == view),
                             )
-                            .truncate(),
-                        );
-                        if ui.add(button(text(Text::Retry), 143.0)).clicked() {
-                            action = Some(BrowserAction::Browse(self.location.clone()));
+                            .clicked()
+                        {
+                            action = Some(BrowserAction::View(view));
                         }
                     }
-                    Listing::Ready(entries) if entries.is_empty() => {
-                        ui.label(RichText::new(text(Text::NoFoldersOrVideos)).size(25.0));
-                    }
-                    Listing::Ready(entries) => {
-                        let columns = self.view.columns();
-                        let rows = entries.len().div_ceil(columns);
-                        let output = ScrollArea::vertical()
-                            .id_salt("files")
-                            .max_height(viewport_height)
-                            .min_scrolled_height(viewport_height)
-                            .auto_shrink([false, false])
-                            .scroll_source(ScrollSource::SCROLL_BAR)
-                            .vertical_scroll_offset(self.offset)
-                            .show_rows(ui, self.view.row_height(), rows, |ui, rows| {
-                                let start = rows.start * columns;
-                                let end = entries.len().min(rows.end * columns);
-                                if let Some(selection) = draw_entries(
-                                    ui,
-                                    &entries[start..end],
-                                    self.view,
-                                    folder.is_some(),
-                                    language,
-                                    thumbnails,
-                                ) {
-                                    action = Some(selection);
-                                }
-                            });
-                        offset = output.state.offset.y;
-                        self.entries_rect = Some(output.inner_rect.intersect(ui.clip_rect()));
-                    }
-                }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        draw_location(ui, folder, language);
+                    });
+                });
             },
         );
+
+        let colors = &theme::COLORS;
+        let mut offset = self.offset;
+        self.entries_rect = None;
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(9, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(text(Text::Sort))
+                            .size(20.0)
+                            .color(colors.muted),
+                    );
+                    let mut sort = self.sort;
+                    sort_controls(ui, &mut sort, language, 1.37);
+                    if sort != self.sort {
+                        action = Some(BrowserAction::Sort(sort));
+                    }
+                });
+                let viewport_height = ui.available_height();
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), viewport_height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.set_min_height(viewport_height);
+                        ui.spacing_mut().item_spacing.y = self.view.row_spacing();
+                        match &self.listing {
+                            Listing::Loading(_) => {
+                                ui.label(RichText::new(text(Text::FolderReading)).size(25.0));
+                            }
+                            Listing::Failed(error) => {
+                                ui.add(
+                                    Label::new(
+                                        RichText::new(format!(
+                                            "{} ({error})",
+                                            text(Text::FolderOpenFailed)
+                                        ))
+                                        .size(25.0),
+                                    )
+                                    .truncate(),
+                                );
+                                if ui.add(button(text(Text::Retry), 143.0)).clicked() {
+                                    action = Some(BrowserAction::Browse(self.location.clone()));
+                                }
+                            }
+                            Listing::Ready(entries) if entries.is_empty() => {
+                                ui.label(RichText::new(text(Text::NoFoldersOrVideos)).size(25.0));
+                            }
+                            Listing::Ready(entries) => {
+                                let columns = self.view.columns();
+                                let rows = entries.len().div_ceil(columns);
+                                let output = ScrollArea::vertical()
+                                    .id_salt("files")
+                                    .max_height(viewport_height)
+                                    .min_scrolled_height(viewport_height)
+                                    .auto_shrink([false, false])
+                                    .scroll_source(ScrollSource::SCROLL_BAR)
+                                    .vertical_scroll_offset(self.offset)
+                                    .show_rows(ui, self.view.row_height(), rows, |ui, rows| {
+                                        let start = rows.start * columns;
+                                        let end = entries.len().min(rows.end * columns);
+                                        if let Some(selection) = draw_entries(
+                                            ui,
+                                            &entries[start..end],
+                                            self.view,
+                                            folder.is_some(),
+                                            thumbnails,
+                                        ) {
+                                            action = Some(selection);
+                                        }
+                                    });
+                                offset = output.state.offset.y;
+                                self.entries_rect =
+                                    Some(output.inner_rect.intersect(ui.clip_rect()));
+                            }
+                        }
+                    },
+                );
+            });
         self.set_offset(offset);
         action
     }
@@ -311,27 +334,13 @@ fn draw_entries(
     entries: &[Entry],
     view: BrowserView,
     in_folder: bool,
-    language: Language,
     thumbnails: &mut Thumbnails,
 ) -> Option<BrowserAction> {
     let mut action = None;
     match view {
         BrowserView::List => {
             for entry in entries {
-                let label = if entry.directory && in_folder {
-                    RichText::new(format!("{}   {}", language.text(Text::Folder), entry.name))
-                        .color(FOLDER_COLOR)
-                } else {
-                    RichText::new(entry.name.as_str())
-                };
-                if ui
-                    .add(
-                        Button::new(label.size(24.0))
-                            .min_size(Vec2::new(ui.available_width(), ROW_HEIGHT))
-                            .truncate(),
-                    )
-                    .clicked()
-                {
+                if file_row(ui, entry, in_folder).clicked() {
                     action = Some(open_entry(entry));
                 }
             }
@@ -343,7 +352,7 @@ fn draw_entries(
             for row in entries.chunks(GRID_COLUMNS) {
                 ui.horizontal(|ui| {
                     for entry in row {
-                        if file_tile(ui, entry, width, thumbnails).clicked() {
+                        if file_tile(ui, entry, width, in_folder, thumbnails).clicked() {
                             action = Some(open_entry(entry));
                         }
                     }
@@ -362,92 +371,127 @@ fn open_entry(entry: &Entry) -> BrowserAction {
     }
 }
 
-fn file_tile(ui: &mut Ui, entry: &Entry, width: f32, thumbnails: &mut Thumbnails) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, TILE_HEIGHT), Sense::click());
+fn entry_region(ui: &mut Ui, entry: &Entry, size: Vec2) -> (Rect, Response) {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &entry.name)
     });
+    (rect, response)
+}
+
+fn entry_icon(entry: &Entry, in_folder: bool, colors: &theme::Colors) -> (Icon, Color32) {
+    if entry.directory {
+        (
+            if in_folder { Icon::Folder } else { Icon::Drive },
+            colors.accent,
+        )
+    } else {
+        (Icon::Film, colors.muted)
+    }
+}
+
+fn file_row(ui: &mut Ui, entry: &Entry, in_folder: bool) -> Response {
+    let (rect, response) = entry_region(ui, entry, vec2(ui.available_width(), ROW_HEIGHT));
+    if ui.is_rect_visible(rect) {
+        let colors = &theme::COLORS;
+        let painter = ui.painter_at(rect);
+        if response.hovered() || response.has_focus() {
+            painter.rect_filled(rect, 6, colors.hover);
+        }
+        let (icon, color) = entry_icon(entry, in_folder, colors);
+        let center = pos2(rect.left() + 24.0, rect.center().y);
+        icon.paint(&painter, center, 20.0, color);
+        let galley = WidgetText::from(RichText::new(&entry.name).size(23.0)).into_galley(
+            ui,
+            Some(TextWrapMode::Truncate),
+            rect.width() - 66.0,
+            egui::TextStyle::Button,
+        );
+        let position = pos2(rect.left() + 51.0, rect.center().y - galley.size().y * 0.5);
+        painter.galley(position, galley, colors.text);
+    }
+    response
+}
+
+fn file_tile(
+    ui: &mut Ui,
+    entry: &Entry,
+    width: f32,
+    in_folder: bool,
+    thumbnails: &mut Thumbnails,
+) -> Response {
+    let (rect, response) = entry_region(ui, entry, vec2(width, TILE_HEIGHT));
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let visuals = ui.style().interact(&response);
+    let colors = &theme::COLORS;
     let painter = ui.painter_at(rect);
-    painter.rect(
-        rect,
-        6.0,
-        visuals.weak_bg_fill,
-        visuals.bg_stroke,
-        StrokeKind::Inside,
-    );
-    let preview_center = pos2(rect.center().x, rect.top() + 8.0 + PREVIEW_HEIGHT * 0.5);
-    let aspect = thumbnail::SIZE[0] as f32 / thumbnail::SIZE[1] as f32;
-    let preview_height = PREVIEW_HEIGHT.min((width - 16.0).max(1.0) / aspect);
-    let preview = Rect::from_center_size(
-        preview_center,
-        vec2(preview_height * aspect, preview_height),
-    );
-    let icon = Rect::from_center_size(preview_center, vec2(43.0, 29.0));
-    if entry.directory {
-        let tab = Rect::from_min_size(icon.left_top() - vec2(0.0, 5.0), vec2(20.0, 10.0));
-        painter.rect_filled(tab, 3.0, FOLDER_COLOR);
-        painter.rect_filled(icon, 4.0, FOLDER_COLOR);
-    } else if let Some(texture) = thumbnails.texture(entry) {
-        let uv = Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0));
-        painter.image(texture, preview, uv, Color32::WHITE);
-    } else {
-        painter.rect_filled(preview, 5.0, Color32::from_rgb(18, 25, 36));
-        painter.rect_stroke(
-            icon,
-            5.0,
-            Stroke::new(2.0_f32, VIDEO_COLOR),
-            StrokeKind::Inside,
-        );
-        let center = icon.center();
-        painter.add(Shape::convex_polygon(
-            vec![
-                center + vec2(-5.0, -7.0),
-                center + vec2(-5.0, 7.0),
-                center + vec2(8.0, 0.0),
-            ],
-            VIDEO_COLOR,
-            Stroke::NONE,
-        ));
+    if response.hovered() || response.has_focus() {
+        painter.rect_filled(rect, 9, colors.hover);
     }
-    let text = WidgetText::from(RichText::new(entry.name.as_str()).size(23.0));
-    let galley = text.into_galley(
+    let preview = Rect::from_min_size(
+        rect.min + vec2(7.0, 7.0),
+        vec2(width - 14.0, PREVIEW_HEIGHT),
+    );
+    let texture = if entry.directory {
+        None
+    } else {
+        thumbnails.texture(entry)
+    };
+    if let Some(texture) = texture {
+        let source = vec2(thumbnail::SIZE[0] as f32, thumbnail::SIZE[1] as f32);
+        let scale = (preview.width() / source.x).max(preview.height() / source.y);
+        let uv = Rect::from_center_size(pos2(0.5, 0.5), preview.size() / (source * scale));
+        egui::Image::new((texture, preview.size()))
+            .uv(uv)
+            .corner_radius(6)
+            .paint_at(ui, preview);
+    } else {
+        let (icon, color) = entry_icon(entry, in_folder, colors);
+        icon.paint(&painter, preview.center(), 40.0, color);
+    }
+    let galley = WidgetText::from(RichText::new(&entry.name).size(22.0)).into_galley(
         ui,
         Some(TextWrapMode::Truncate),
-        width - 20.0,
+        width - 24.0,
         egui::TextStyle::Button,
     );
-    let position = pos2(
-        rect.center().x - galley.size().x * 0.5,
-        rect.bottom() - 8.0 - galley.size().y,
-    );
-    painter.galley(position, galley, visuals.text_color());
+    let position = pos2(rect.left() + 12.0, rect.bottom() - 8.0 - galley.size().y);
+    painter.galley(position, galley, colors.text);
     response
 }
 
 fn draw_location(ui: &mut Ui, folder: Option<&Path>, language: Language) {
-    let font = FontId::proportional(25.0);
-    let mut location = folder.map_or(language.text(Text::ThisPc).into(), Path::to_string_lossy);
-    let size = ui
-        .painter()
-        .layout_no_wrap(location.to_string(), font.clone(), FOLDER_COLOR)
-        .size();
-    if size.x > ui.available_width()
-        && let Some(name) = folder.and_then(Path::file_name)
-    {
-        location = format!("…\\{}", name.to_string_lossy()).into();
-    }
-    ui.add(
-        Label::new(
-            RichText::new(location.as_ref())
-                .font(font)
-                .color(FOLDER_COLOR),
-        )
-        .truncate(),
-    );
+    let colors = &theme::COLORS;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(13, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let font = FontId::proportional(21.0);
+            let full_path =
+                folder.map_or(language.text(Text::ThisPc).into(), Path::to_string_lossy);
+            let width = ui
+                .painter()
+                .layout_no_wrap(full_path.to_string(), font.clone(), colors.text)
+                .size()
+                .x;
+            let location = if width > ui.available_width()
+                && let Some(name) = folder.and_then(Path::file_name)
+            {
+                format!("…\\{}", name.to_string_lossy()).into()
+            } else {
+                full_path.clone()
+            };
+            ui.add(
+                Label::new(
+                    RichText::new(location.as_ref())
+                        .font(font)
+                        .color(colors.text),
+                )
+                .truncate(),
+            )
+            .on_hover_text(full_path.as_ref());
+        });
 }
 
 fn button(label: &str, width: f32) -> Button<'_> {

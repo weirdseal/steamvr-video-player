@@ -125,6 +125,7 @@ pub(super) struct Controllers {
     aim_spaces: [xr::Space; 2],
     paths: [xr::Path; 2],
     select: xr::Action<bool>,
+    aim: xr::Action<xr::Posef>,
     stick: xr::Action<xr::Vector2f>,
     reset: xr::Action<bool>,
     move_view: xr::Action<bool>,
@@ -213,6 +214,7 @@ impl Controllers {
             aim_spaces,
             paths,
             select,
+            aim,
             stick,
             reset,
             move_view,
@@ -267,7 +269,7 @@ impl Controllers {
             hand.active = state.is_active;
             hand.down = state.is_active && state.current_state;
             hand.pressed = was_synced && hand.down && state.changed_since_last_sync;
-            if locate_aim && hand.active {
+            if (locate_aim || hand.pressed) && self.aim.is_active(session, path)? {
                 let aim = self.aim_spaces[index].locate(&self.view, time)?;
                 let required = xr::SpaceLocationFlags::ORIENTATION_VALID
                     | xr::SpaceLocationFlags::POSITION_VALID;

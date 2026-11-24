@@ -439,8 +439,8 @@ void main() {
     float radius = length(uv - 0.5);
     float alpha = 1.0 - smoothstep(0.26, 0.30, radius);
     float fill = 1.0 - smoothstep(0.20, 0.24, radius);
-    vec3 border = srgb_to_linear(vec3(14.0, 21.0, 34.0) / 255.0);
-    vec3 center = srgb_to_linear(vec3(150.0, 224.0, 255.0) / 255.0);
+    vec3 border = srgb_to_linear(vec3(20.0 / 255.0));
+    vec3 center = vec3(1.0);
     color = vec4(mix(border, center, fill) * alpha, alpha);
 }
 "#;

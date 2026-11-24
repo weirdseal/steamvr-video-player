@@ -8,6 +8,7 @@ SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. I
 - `mpv.rs` manages DLL calls, handle lifetimes, and playback state. `graphics.rs` manages textures shared between the desktop and VR and synchronizes access to them. `vr.rs` owns the OpenXR session and swapchains.
 - `vr/input.rs` reads controller state. `vr/panel.rs` handles aiming and trigger gestures. `vr/browser.rs` renders folders and entries. The browser and previous and next video controls share the sort order defined in `files.rs`.
 - `settings.rs` defines defaults and the on-disk format. When adding settings, preserve compatibility with existing `settings.json` files through stable field names and suitable defaults. Use `settings_ui.rs` for controls shared by the desktop and VR.
+- Use the palette and control surfaces from `theme.rs` in both desktop and VR views.
 - Write this file and all code comments in English.
 
 ## Localization
@@ -25,6 +26,7 @@ SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. I
 
 ## Verification
 
+- Use the repository's `target` directory for local and verification builds.
 - Wire changes through the existing module entry points. Use Rust ownership and `Drop` to manage native resource lifetimes. Document the type, alignment, and lifetime requirements of FFI pointer casts.
 - Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`. For Windows GNU builds, use the toolchain and target described in the README. Package the executable and its DLLs with `scripts/build.ps1`.
 - Verify UI and VR changes with real videos and SteamVR. Check that thumbnails match their source clips and that both browser views can scroll and select entries in a large folder. Record which checks used a physical controller and which used automated input.

@@ -3,9 +3,17 @@ use egui::{
     WidgetType, vec2,
 };
 
+use crate::theme;
+
+const CAPTION_SCALE: f32 = 0.42;
+const CAPTION_END_PADDING: f32 = 5.0;
+
 #[derive(Clone, Copy)]
 pub enum Icon {
     Folder,
+    Film,
+    Headset,
+    Info,
     Play,
     Pause,
     Previous,
@@ -29,9 +37,9 @@ pub enum Icon {
 pub struct IconButton<'a> {
     icon: Icon,
     label: &'a str,
+    caption: Option<&'a str>,
     size: Vec2,
     selected: bool,
-    primary: bool,
 }
 
 impl<'a> IconButton<'a> {
@@ -39,9 +47,9 @@ impl<'a> IconButton<'a> {
         Self {
             icon,
             label,
+            caption: None,
             size: vec2(36.0, 30.0),
             selected: false,
-            primary: false,
         }
     }
 
@@ -50,13 +58,26 @@ impl<'a> IconButton<'a> {
         self
     }
 
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
+    pub fn caption(mut self, caption: &'a str) -> Self {
+        self.caption = Some(caption);
         self
     }
 
-    pub fn primary(mut self) -> Self {
-        self.primary = true;
+    pub fn fit_caption(mut self, ui: &Ui, height: f32) -> Self {
+        let width = self.caption.map_or(height, |caption| {
+            let galley = ui.painter().layout_no_wrap(
+                caption.to_owned(),
+                egui::FontId::proportional(height * CAPTION_SCALE),
+                Color32::PLACEHOLDER,
+            );
+            height + galley.size().x.ceil() + CAPTION_END_PADDING
+        });
+        self.size = vec2(width, height);
+        self
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
         self
     }
 }
@@ -67,42 +88,56 @@ impl Widget for IconButton<'_> {
         response
             .widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label));
         if ui.is_rect_visible(rect) {
-            let visuals = ui.style().interact_selectable(&response, self.selected);
-            let (fill, color) = if self.primary && response.enabled() {
-                let fill = if response.hovered() {
-                    Color32::from_rgb(175, 217, 255)
-                } else {
-                    Color32::from_rgb(139, 195, 255)
-                };
-                (fill, Color32::from_rgb(8, 18, 31))
+            let colors = &theme::COLORS;
+            let (fill, color) = if !response.enabled() {
+                (Color32::TRANSPARENT, colors.disabled)
+            } else if self.selected || response.is_pointer_button_down_on() {
+                (colors.pressed, colors.text)
+            } else if response.hovered() {
+                (colors.hover, colors.text)
             } else {
-                (visuals.weak_bg_fill, visuals.text_color())
+                (Color32::TRANSPARENT, colors.text)
+            };
+            let extent = rect.width().min(rect.height());
+            let stroke = if response.has_focus() {
+                Stroke::new(1.5_f32, colors.accent)
+            } else {
+                Stroke::NONE
             };
             let painter = ui.painter();
-            painter.rect(rect, 5.0, fill, visuals.bg_stroke, StrokeKind::Inside);
-            self.icon.paint(
-                painter,
-                rect.center(),
-                rect.width().min(rect.height()) * 0.56,
-                color,
-                fill,
-            );
+            painter.rect(rect, 6, fill, stroke, StrokeKind::Inside);
+            let center = self.caption.map_or(rect.center(), |_| {
+                rect.left_center() + vec2(extent * 0.5, 0.0)
+            });
+            self.icon.paint(painter, center, extent * 0.50, color);
+            if let Some(caption) = self.caption {
+                let text = egui::RichText::new(caption)
+                    .font(egui::FontId::proportional(extent * CAPTION_SCALE));
+                let width = (rect.width() - extent - CAPTION_END_PADDING).max(0.0);
+                let galley = egui::WidgetText::from(text).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    width,
+                    egui::TextStyle::Button,
+                );
+                painter.galley(
+                    egui::pos2(
+                        rect.left() + extent,
+                        rect.center().y - galley.size().y * 0.5,
+                    ),
+                    galley,
+                    color,
+                );
+            }
         }
         response.on_hover_text(self.label)
     }
 }
 
 impl Icon {
-    fn paint(
-        self,
-        painter: &egui::Painter,
-        center: Pos2,
-        size: f32,
-        color: Color32,
-        background: Color32,
-    ) {
+    pub fn paint(self, painter: &egui::Painter, center: Pos2, size: f32, color: Color32) {
         let point = |x, y| center + size * vec2(x, y);
-        let stroke = Stroke::new((size * 0.095).max(1.4), color);
+        let stroke = Stroke::new((size * 0.087).max(1.4), color);
         let line = |a: (f32, f32), b: (f32, f32)| {
             painter.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
         };
@@ -150,6 +185,23 @@ impl Icon {
                     (-0.30, -0.08),
                     (-0.47, 0.35),
                 ]);
+            }
+            Self::Film => {
+                let rect = egui::Rect::from_min_max(point(-0.49, -0.34), point(0.49, 0.34));
+                painter.rect_stroke(rect, size * 0.12, stroke, StrokeKind::Inside);
+                filled(&[(-0.13, -0.19), (-0.13, 0.19), (0.20, 0.0)]);
+            }
+            Self::Headset => {
+                let rect = egui::Rect::from_min_max(point(-0.49, -0.31), point(0.49, 0.30));
+                painter.rect_stroke(rect, size * 0.14, stroke, StrokeKind::Inside);
+                line((-0.28, 0.04), (-0.15, 0.04));
+                line((0.15, 0.04), (0.28, 0.04));
+                path(&[(-0.13, 0.28), (0.0, 0.13), (0.13, 0.28)]);
+            }
+            Self::Info => {
+                painter.circle_stroke(center, size * 0.42, stroke);
+                painter.circle_filled(point(0.0, -0.17), stroke.width * 0.58, color);
+                line((0.0, -0.01), (0.0, 0.20));
             }
             Self::Play => triangle(0.04, 1.0),
             Self::Pause => {
@@ -216,14 +268,14 @@ impl Icon {
                     let direction = Vec2::angled(angle);
                     painter.line_segment(
                         [
-                            center + direction * size * 0.28,
+                            center + direction * size * 0.30,
                             center + direction * size * 0.47,
                         ],
-                        Stroke::new(size * 0.15, color),
+                        stroke,
                     );
                 }
-                painter.circle_filled(center, size * 0.36, color);
-                painter.circle_filled(center, size * 0.16, background);
+                painter.circle_stroke(center, size * 0.32, stroke);
+                painter.circle_stroke(center, size * 0.12, stroke);
             }
             Self::Close => {
                 line((-0.32, -0.32), (0.32, 0.32));

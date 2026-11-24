@@ -1,16 +1,14 @@
 [CmdletBinding()]
 param(
     [switch]$DebugBuild,
-    [switch]$Gnu,
-    [string]$BuildDirectory = ''
+    [switch]$Gnu
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $project = Split-Path -Parent $PSScriptRoot
-if (!$BuildDirectory) { $BuildDirectory = Join-Path $project 'target' }
-$BuildDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BuildDirectory)
-$vendorDirectory = Join-Path $BuildDirectory 'dependencies'
+$buildDirectory = Join-Path $project 'target'
+$vendorDirectory = Join-Path $buildDirectory 'dependencies'
 New-Item -ItemType Directory -Path $vendorDirectory -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -61,7 +59,7 @@ if ($Gnu) {
     $toolchain = @('+stable-x86_64-pc-windows-gnu')
 }
 $profile = if ($DebugBuild) { 'debug' } else { 'release' }
-$cargoArgs = @('build', '--locked', '--target', $target, '--target-dir', $BuildDirectory)
+$cargoArgs = @('build', '--locked', '--target', $target, '--target-dir', $buildDirectory)
 if (!$DebugBuild) { $cargoArgs += '--release' }
 
 Push-Location -LiteralPath $project
@@ -72,7 +70,7 @@ try {
     Pop-Location
 }
 
-$output = Join-Path (Join-Path $BuildDirectory $target) $profile
+$output = Join-Path (Join-Path $buildDirectory $target) $profile
 Copy-ArchiveEntry $mpv 'libmpv-2.dll' (Join-Path $output 'libmpv-2.dll')
 Copy-ArchiveEntry $mpv 'LICENSE.LGPL' (Join-Path $output 'LICENSE-libmpv.txt')
 Copy-ArchiveEntry $xr 'native/x64/release/bin/openxr_loader.dll' (Join-Path $output 'openxr_loader.dll')
