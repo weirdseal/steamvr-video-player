@@ -77,4 +77,5 @@ Copy-ArchiveEntry $mpv 'libmpv-2.dll' (Join-Path $output 'libmpv-2.dll')
 Copy-ArchiveEntry $mpv 'LICENSE.LGPL' (Join-Path $output 'LICENSE-libmpv.txt')
 Copy-ArchiveEntry $xr 'native/x64/release/bin/openxr_loader.dll' (Join-Path $output 'openxr_loader.dll')
 Copy-Item -LiteralPath (Join-Path $project 'assets\OFL-NotoSansKR.txt') -Destination $output
+Copy-Item -LiteralPath (Join-Path $project 'LICENSE') -Destination $output
 Write-Host (Join-Path $output 'steamvr-video-player.exe')
