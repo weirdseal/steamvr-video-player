@@ -24,14 +24,15 @@ use crate::ui::{self, Action, time_label};
 const WIDTH: f32 = 1.18;
 const PIXEL_WIDTH: u32 = 1040;
 const PLAYBACK_HEIGHT: u32 = 206;
-const PLAYBACK_ERROR_HEIGHT: u32 = 250;
 const BROWSER_HEIGHT: u32 = 640;
 const SETTINGS_WIDTH: u32 = 860;
 const SETTINGS_HEIGHT: u32 = 520;
+const ERROR_WIDTH: u32 = 760;
+const ERROR_HEIGHT: u32 = 350;
 const PANEL_GAP: u32 = 24;
 const PLAYBACK_TOP: u32 = BROWSER_HEIGHT + PANEL_GAP;
 // The compositor receives both panels at the same pose with a transparent gap.
-const SIZE: [u32; 2] = [PIXEL_WIDTH, PLAYBACK_TOP + PLAYBACK_ERROR_HEIGHT];
+const SIZE: [u32; 2] = [PIXEL_WIDTH, PLAYBACK_TOP + PLAYBACK_HEIGHT];
 const METERS_PER_PIXEL: f32 = WIDTH / PIXEL_WIDTH as f32;
 const PANEL_Z: f32 = -1.30;
 const PLAYBACK_TOP_Y: f32 = -0.123;
@@ -60,13 +61,19 @@ const PLAYBACK_RECT: Rect = Rect {
     min: Pos2::new(0.0, PLAYBACK_TOP as f32),
     max: Pos2::new(PIXEL_WIDTH as f32, (PLAYBACK_TOP + PLAYBACK_HEIGHT) as f32),
 };
-const PLAYBACK_ERROR_RECT: Rect = Rect {
-    min: PLAYBACK_RECT.min,
-    max: Pos2::new(PIXEL_WIDTH as f32, SIZE[1] as f32),
+const ERROR_RECT: Rect = Rect {
+    min: Pos2::new(
+        ((PIXEL_WIDTH - ERROR_WIDTH) / 2) as f32,
+        (BROWSER_HEIGHT - ERROR_HEIGHT) as f32,
+    ),
+    max: Pos2::new(
+        ((PIXEL_WIDTH + ERROR_WIDTH) / 2) as f32,
+        BROWSER_HEIGHT as f32,
+    ),
 };
 const SURFACE_RECT: Rect = Rect {
     min: Pos2::ZERO,
-    max: PLAYBACK_ERROR_RECT.max,
+    max: PLAYBACK_RECT.max,
 };
 
 fn point_at(aim: glam::Vec2) -> Pos2 {
@@ -103,9 +110,13 @@ enum PanelHit {
 }
 
 impl PanelHit {
-    fn at(aim: glam::Vec2, playback_panel: Rect, upper_panel: Option<Rect>) -> Option<Self> {
+    fn at(
+        aim: glam::Vec2,
+        playback_panel: Option<Rect>,
+        upper_panel: Option<Rect>,
+    ) -> Option<Self> {
         let point = point_at(aim);
-        if playback_panel.contains(point) {
+        if playback_panel.is_some_and(|rect| rect.contains(point)) {
             return Some(Self::Playback(point));
         }
         upper_panel
@@ -131,16 +142,10 @@ fn preferred_hand(
         .or_else(|| aim.iter().position(Option::is_some))
 }
 
-fn playback_panel_rect(playback: &Playback) -> Rect {
-    if playback.error.is_some() {
-        PLAYBACK_ERROR_RECT
-    } else {
-        PLAYBACK_RECT
-    }
-}
-
-fn upper_panel_rect(browser_open: bool, settings_open: bool) -> Option<Rect> {
-    if browser_open {
+fn upper_panel_rect(browser_open: bool, settings_open: bool, error_open: bool) -> Option<Rect> {
+    if error_open {
+        Some(ERROR_RECT)
+    } else if browser_open {
         Some(BROWSER_RECT)
     } else {
         settings_open.then_some(SETTINGS_RECT)
@@ -194,6 +199,7 @@ impl<'a> PanelSurface<'a> {
         pointer: Option<Pos2>,
         raster_cursor: Option<Pos2>,
         click: Option<Pos2>,
+        scroll: f32,
         mut contents: impl FnMut(&mut egui::Ui),
     ) -> Result<()> {
         let mut input = egui::RawInput {
@@ -206,6 +212,13 @@ impl<'a> PanelSurface<'a> {
             Some(point) => egui::Event::PointerMoved(point),
             None => egui::Event::PointerGone,
         });
+        if scroll != 0.0 {
+            input.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, -scroll),
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
         if let Some(pos) = click {
             for pressed in [true, false] {
                 input.events.push(egui::Event::PointerButton {
@@ -422,8 +435,9 @@ impl<'a> PlaybackPanel<'a> {
         })
     }
 
-    pub fn visible(&self, now: Instant, timeout: u8) -> bool {
-        self.last_image.is_none()
+    pub fn visible(&self, now: Instant, timeout: u8, error_open: bool) -> bool {
+        error_open
+            || self.last_image.is_none()
             || self.browser.is_some()
             || self.settings_page.is_some()
             || self.scrub.is_some()
@@ -438,20 +452,22 @@ impl<'a> PlaybackPanel<'a> {
         self.pointing_hand = None;
     }
 
-    pub fn browser_aimed(&self, hands: &[Hand; 2]) -> bool {
-        if self.browser.is_none() || self.scrub.is_some() {
-            return false;
-        }
-        if self.browser_drag.is_some() {
-            return true;
-        }
-        let playback_panel = self
-            .last_image
-            .as_ref()
-            .map_or(PLAYBACK_RECT, |image| playback_panel_rect(&image.playback));
+    pub fn scroll_aimed(&self, hands: &[Hand; 2], error_open: bool) -> bool {
+        let upper_panel = if error_open {
+            ERROR_RECT
+        } else {
+            if self.browser.is_none() || self.scrub.is_some() {
+                return false;
+            }
+            if self.browser_drag.is_some() {
+                return true;
+            }
+            BROWSER_RECT
+        };
+        let playback_panel = (!error_open).then_some(PLAYBACK_RECT);
         let aim = hands.map(|hand| hand.aim.and_then(aim_on_plane));
         let hits = aim.map(|point| {
-            point.and_then(|point| PanelHit::at(point, playback_panel, Some(BROWSER_RECT)))
+            point.and_then(|point| PanelHit::at(point, playback_panel, Some(upper_panel)))
         });
         preferred_hand(self.pointing_hand, aim, hits)
             .is_some_and(|hand| matches!(hits[hand], Some(PanelHit::Upper(_))))
@@ -466,18 +482,34 @@ impl<'a> PlaybackPanel<'a> {
         preferences: Preferences,
         proxy: &EventLoopProxy<AppEvent>,
     ) -> Result<Option<PanelFrame>> {
-        let visible = self.visible(now, preferences.panel_timeout);
-        if !visible && !hands.iter().any(|hand| hand.pressed) {
-            return Ok(None);
+        let (mut playback, visible) = {
+            let state = video.lock().unwrap();
+            let visible = self.visible(
+                now,
+                preferences.panel_timeout,
+                state.playback.error.is_some(),
+            );
+            if !visible && !hands.iter().any(|hand| hand.pressed) {
+                return Ok(None);
+            }
+            (state.playback.clone(), visible)
+        };
+        let error_open = playback.error.is_some();
+        if error_open {
+            self.scrub = None;
+            self.browser_drag = None;
         }
 
-        let upper_panel = upper_panel_rect(self.browser.is_some(), self.settings_page.is_some());
+        let upper_panel = upper_panel_rect(
+            self.browser.is_some(),
+            self.settings_page.is_some(),
+            error_open,
+        );
         let entries_rect = self.browser.as_mut().and_then(|browser| {
             browser.preferences(preferences);
-            browser.entries_rect()
+            browser.entries_rect().filter(|_| !error_open)
         });
-        let mut playback = video.lock().unwrap().playback.clone();
-        let playback_panel = playback_panel_rect(&playback);
+        let playback_panel = (!error_open).then_some(PLAYBACK_RECT);
         let aim = hands.map(|hand| hand.aim.and_then(aim_on_plane));
         let hits = aim
             .map(|point| point.and_then(|point| PanelHit::at(point, playback_panel, upper_panel)));
@@ -552,9 +584,10 @@ impl<'a> PlaybackPanel<'a> {
             } else {
                 click = Some(hit.point());
             }
-        } else if let Some(hand) = hands
-            .iter()
-            .position(|hand| hand.pressed && hand.aim.is_some())
+        } else if !error_open
+            && let Some(hand) = hands
+                .iter()
+                .position(|hand| hand.pressed && hand.aim.is_some())
         {
             if upper_panel.is_some() {
                 self.browser = None;
@@ -572,7 +605,11 @@ impl<'a> PlaybackPanel<'a> {
             PanelHit::at(
                 point,
                 playback_panel,
-                upper_panel_rect(self.browser.is_some(), self.settings_page.is_some()),
+                upper_panel_rect(
+                    self.browser.is_some(),
+                    self.settings_page.is_some(),
+                    error_open,
+                ),
             )
         });
         let pointer = hit.map(PanelHit::point);
@@ -601,8 +638,13 @@ impl<'a> PlaybackPanel<'a> {
             .or(playback.position.map(f64::floor));
         playback.volume = playback.volume.round();
         if let Some(browser) = &mut self.browser {
-            browser.poll();
-            if scroll != 0.0 && !was_dragging_browser && self.browser_drag.is_none() {
+            if let Some(error) = browser.poll() {
+                let title = preferences.language.text(Text::FolderOpenFailed);
+                let _ =
+                    proxy.send_event(AppEvent::Vr(Message::Error(format!("{title} ({error})"))));
+            }
+            if !error_open && scroll != 0.0 && !was_dragging_browser && self.browser_drag.is_none()
+            {
                 browser.scroll_by(scroll);
             }
         }
@@ -614,13 +656,15 @@ impl<'a> PlaybackPanel<'a> {
             settings_page: self.settings_page,
             preferences,
         };
-        let browser_visible = display.browser_revision.is_some();
+        let browser_visible = !error_open && display.browser_revision.is_some();
+        let error_scroll = if error_open { scroll } else { 0.0 };
         let thumbnails_ready = browser_visible
             && preferences.browser_view == crate::settings::BrowserView::Grid
             && self.thumbnails.poll(&self.surface.egui);
         let time = now.duration_since(self.started).as_secs_f64();
         if click.is_some()
             || committed.is_some()
+            || error_scroll != 0.0
             || thumbnails_ready
             || self.last_image.as_ref() != Some(&display)
             || self.surface.hover_changed(pointer, time)
@@ -633,8 +677,16 @@ impl<'a> PlaybackPanel<'a> {
             let mut edited = preferences;
             let browser = &mut self.browser;
             self.surface
-                .draw(time, pointer, raster_cursor, click, |ui| {
-                    if let Some(browser) = browser {
+                .draw(time, pointer, raster_cursor, click, error_scroll, |ui| {
+                    if let Some(error) = &display.playback.error {
+                        draw_section(ui, "alert", ERROR_RECT, |ui| {
+                            if ui::error_contents(ui, preferences.language, error, 1.5) {
+                                action = Some(PanelAction::Playback(Action::DismissError(
+                                    error.clone(),
+                                )));
+                            }
+                        });
+                    } else if let Some(browser) = browser {
                         draw_section(ui, "browser", BROWSER_RECT, |ui| {
                             browser_action =
                                 browser.draw(ui, preferences.language, &mut self.thumbnails);
@@ -648,7 +700,7 @@ impl<'a> PlaybackPanel<'a> {
                             settings_page = None;
                         }
                     }
-                    draw_section(ui, "playback", playback_panel, |ui| {
+                    draw_section(ui, "playback", PLAYBACK_RECT, |ui| {
                         timeline = Some(draw_playback(ui, &display, &mut action));
                     });
                 })?;
@@ -911,9 +963,6 @@ fn draw_playback(
             });
         },
     );
-    if let Some(error) = playback.error.as_deref() {
-        ui.add(egui::Label::new(RichText::new(error).size(22.0).color(colors.text)).truncate());
-    }
     timeline
 }
 
@@ -1026,7 +1075,7 @@ mod tests {
         let aim = [Some(glam::Vec2::ZERO), Some(glam::Vec2::new(-0.4, -0.3))];
         let hits = |aim: [Option<glam::Vec2>; 2]| {
             aim.map(|point| {
-                point.and_then(|point| PanelHit::at(point, PLAYBACK_RECT, Some(BROWSER_RECT)))
+                point.and_then(|point| PanelHit::at(point, Some(PLAYBACK_RECT), Some(BROWSER_RECT)))
             })
         };
         let both_aimed = hits(aim);
@@ -1063,36 +1112,44 @@ mod tests {
         let browser = aim_at_y(BROWSER_RECT.center().y);
         let gap = aim_at_y((BROWSER_RECT.bottom() + PLAYBACK_RECT.top()) * 0.5);
         assert!(
-            matches!(PanelHit::at(playback, PLAYBACK_RECT, Some(BROWSER_RECT)), Some(PanelHit::Playback(point))
+            matches!(PanelHit::at(playback, Some(PLAYBACK_RECT), Some(BROWSER_RECT)), Some(PanelHit::Playback(point))
             if point.distance(PLAYBACK_RECT.center()) < 0.001)
         );
         assert!(
-            matches!(PanelHit::at(browser, PLAYBACK_RECT, Some(BROWSER_RECT)), Some(PanelHit::Upper(point))
+            matches!(PanelHit::at(browser, Some(PLAYBACK_RECT), Some(BROWSER_RECT)), Some(PanelHit::Upper(point))
             if point.distance(BROWSER_RECT.center()) < 0.001)
         );
-        assert_eq!(PanelHit::at(browser, PLAYBACK_RECT, None), None);
-        assert_eq!(PanelHit::at(gap, PLAYBACK_RECT, Some(BROWSER_RECT)), None);
+        assert_eq!(PanelHit::at(browser, Some(PLAYBACK_RECT), None), None);
+        assert_eq!(
+            PanelHit::at(gap, Some(PLAYBACK_RECT), Some(BROWSER_RECT)),
+            None
+        );
 
         let above_settings = aim_at_y(SETTINGS_RECT.top() * 0.5);
         assert!(matches!(
-            PanelHit::at(above_settings, PLAYBACK_RECT, upper_panel_rect(true, false)),
+            PanelHit::at(
+                above_settings,
+                Some(PLAYBACK_RECT),
+                upper_panel_rect(true, false, false)
+            ),
             Some(PanelHit::Upper(_))
         ));
         assert_eq!(
-            PanelHit::at(above_settings, PLAYBACK_RECT, upper_panel_rect(false, true)),
+            PanelHit::at(
+                above_settings,
+                Some(PLAYBACK_RECT),
+                upper_panel_rect(false, true, false)
+            ),
             None
         );
 
-        let footer = aim_at_y((PLAYBACK_RECT.bottom() + PLAYBACK_ERROR_RECT.bottom()) * 0.5);
-        let mut state = Playback::default();
-        assert_eq!(
-            PanelHit::at(footer, playback_panel_rect(&state), None),
-            None
-        );
-        state.set_error("Example playback error".to_owned());
+        let alert = upper_panel_rect(true, false, true);
+        assert_eq!(alert, Some(ERROR_RECT));
+        assert_eq!(PanelHit::at(playback, None, alert), None);
+        assert_eq!(PanelHit::at(above_settings, None, alert), None);
         assert!(matches!(
-            PanelHit::at(footer, playback_panel_rect(&state), None),
-            Some(PanelHit::Playback(_))
+            PanelHit::at(aim_at_y(ERROR_RECT.center().y), None, alert),
+            Some(PanelHit::Upper(_))
         ));
     }
 

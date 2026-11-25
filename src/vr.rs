@@ -29,7 +29,7 @@ use crate::{APP_NAME, AppEvent, executable_dir};
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 const TURN_RATE: f32 = 85.0_f32.to_radians();
 const PITCH_LIMIT: f32 = 85.0_f32.to_radians();
-const FILE_SCROLL_SPEED: f32 = 1000.0;
+const PANEL_SCROLL_SPEED: f32 = 1000.0;
 
 #[derive(Clone)]
 pub struct RuntimeInfo {
@@ -46,7 +46,7 @@ pub enum Message {
     Session(RuntimeInfo),
     Presenting,
     Playback(Action),
-    ControlsUnavailable(String),
+    Error(String),
     Finished(Result<(), String>),
 }
 
@@ -379,13 +379,16 @@ fn run_session(
             recenter_at = None;
         }
         let now = Instant::now();
-        let preferences = video.lock().unwrap().preferences;
+        let (preferences, error_open) = {
+            let state = video.lock().unwrap();
+            (state.preferences, state.playback.error.is_some())
+        };
         let should_render = state.should_render && !exit_requested;
         let mut input = input::FrameInput::default();
         if should_render && let Some(devices) = &mut controllers {
             let locate_aim = panel
                 .as_ref()
-                .is_some_and(|panel| panel.visible(now, preferences.panel_timeout));
+                .is_some_and(|panel| panel.visible(now, preferences.panel_timeout, error_open));
             match devices.read(&session, time, focused, locate_aim) {
                 Ok(frame) => input = frame,
                 Err(error) => {
@@ -398,15 +401,15 @@ fn run_session(
         let scroll = if input.motion.zoom != 0.0
             && panel
                 .as_ref()
-                .is_some_and(|panel| panel.browser_aimed(&input.hands))
+                .is_some_and(|panel| panel.scroll_aimed(&input.hands, error_open))
         {
             let seconds =
                 (state.predicted_display_period.as_nanos() as f32 * 1e-9).clamp(0.0, 0.05);
-            -std::mem::take(&mut input.motion.zoom) * FILE_SCROLL_SPEED * seconds
+            -std::mem::take(&mut input.motion.zoom) * PANEL_SCROLL_SPEED * seconds
         } else {
             0.0
         };
-        if let Some(direction) = input.seek_direction {
+        if !error_open && let Some(direction) = input.seek_direction {
             let seconds = direction * f64::from(preferences.vr_seek);
             let _ = proxy.send_event(AppEvent::Vr(Message::Playback(Action::SeekBy(seconds))));
         }
@@ -508,7 +511,7 @@ fn report_controls_error(
 ) {
     let message = format!("{context} ({error:#})");
     log::warn!("{message}");
-    let _ = proxy.send_event(AppEvent::Vr(Message::ControlsUnavailable(message)));
+    let _ = proxy.send_event(AppEvent::Vr(Message::Error(message)));
 }
 
 struct GlSwapchain<'a> {

@@ -91,7 +91,7 @@ impl Widget for IconButton<'_> {
             let colors = &theme::COLORS;
             let (fill, color) = if !response.enabled() {
                 (Color32::TRANSPARENT, colors.disabled)
-            } else if self.selected || response.is_pointer_button_down_on() {
+            } else if response.is_pointer_button_down_on() {
                 (colors.pressed, colors.text)
             } else if response.hovered() {
                 (colors.hover, colors.text)
@@ -106,6 +106,9 @@ impl Widget for IconButton<'_> {
             };
             let painter = ui.painter();
             painter.rect(rect, 6, fill, stroke, StrokeKind::Inside);
+            if self.selected && response.enabled() {
+                theme::selection_mark(painter, rect);
+            }
             let center = self.caption.map_or(rect.center(), |_| {
                 rect.left_center() + vec2(extent * 0.5, 0.0)
             });
@@ -130,7 +133,9 @@ impl Widget for IconButton<'_> {
                 );
             }
         }
-        response.on_hover_text(self.label)
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(self.label)
     }
 }
 

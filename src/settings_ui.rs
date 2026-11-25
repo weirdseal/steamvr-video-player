@@ -254,17 +254,20 @@ fn choices<T: Copy + PartialEq>(ui: &mut Ui, value: &mut T, options: &[(T, &str)
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.x = 4.0 * scale;
+            let mut selected_rect = None;
             for &(choice, label) in options {
-                if ui
-                    .add(
-                        Button::new(caption(label, scale))
-                            .min_size(Vec2::new(38.0, 27.0) * scale)
-                            .selected(*value == choice),
-                    )
-                    .clicked()
-                {
+                let response = ui
+                    .add(Button::new(caption(label, scale)).min_size(Vec2::new(38.0, 27.0) * scale))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.clicked() {
                     *value = choice;
                 }
+                if *value == choice {
+                    selected_rect = Some(response.rect);
+                }
+            }
+            if let Some(rect) = selected_rect {
+                theme::selection_mark(ui.painter(), rect);
             }
         },
     );
@@ -280,10 +283,11 @@ fn toggle(ui: &mut Ui, value: &mut bool, label: &str, scale: f32) {
         (ui.available_width() - switch_width - gap).max(0.0),
         egui::TextStyle::Body,
     );
-    let (rect, mut response) = ui.allocate_exact_size(
+    let (rect, response) = ui.allocate_exact_size(
         Vec2::new(switch_width + gap + galley.size().x, 29.0 * scale),
         Sense::click(),
     );
+    let mut response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         *value = !*value;
         response.mark_changed();

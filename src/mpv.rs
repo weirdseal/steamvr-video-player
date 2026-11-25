@@ -408,7 +408,22 @@ impl Default for Playback {
 
 impl Playback {
     pub fn set_error(&mut self, error: String) {
-        self.error = Some(Arc::from(error));
+        if self.error.as_deref() != Some(error.as_str()) {
+            self.error = Some(Arc::from(error));
+        }
+    }
+
+    pub fn dismiss_error(&mut self, error: &Arc<str>) -> bool {
+        if self
+            .error
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, error))
+        {
+            self.error = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn begin_load(&mut self) {

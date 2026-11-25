@@ -8,7 +8,7 @@ A Rust video player for Windows 10 and 11 x64 that sends video directly to Steam
 
 ## Desktop playback
 
-Press `Ctrl+O` or drag a video into the window. The player opens formats supported by libmpv, including MP4, MKV, MOV, and AVI.
+Select **Open file** or drag a video into the window. The player opens formats supported by libmpv, including MP4, MKV, MOV, and AVI.
 
 | Shortcut | Action |
 | --- | --- |
@@ -16,7 +16,6 @@ Press `Ctrl+O` or drag a video into the window. The player opens formats support
 | `←` / `→` | Skip backward or forward |
 | `↑` / `↓` / `M` | Adjust volume or mute |
 | `F` / `F11` / `Esc` | Toggle or exit fullscreen |
-| `V` | Enter or exit VR |
 
 Set separate PC and VR skip intervals from 1 to 60 seconds in **Settings → Playback**. The defaults are 5 seconds on PC and 10 seconds in VR.
 
@@ -49,7 +48,7 @@ Windows 10/11 x64용 Rust 동영상 플레이어입니다. OpenXR을 통해 Stea
 
 ### PC 재생
 
-`Ctrl+O`를 누르거나 영상 파일을 창에 끌어다 놓습니다. MP4, MKV, MOV, AVI 등 libmpv가 지원하는 형식을 재생합니다.
+**파일 열기**를 누르거나 영상 파일을 창에 끌어다 놓습니다. MP4, MKV, MOV, AVI 등 libmpv가 지원하는 형식을 재생합니다.
 
 | 단축키 | 동작 |
 | --- | --- |
@@ -57,7 +56,6 @@ Windows 10/11 x64용 Rust 동영상 플레이어입니다. OpenXR을 통해 Stea
 | `←` / `→` | 뒤로 또는 앞으로 스킵 |
 | `↑` / `↓` / `M` | 음량 조절 또는 음소거 |
 | `F` / `F11` / `Esc` | 전체 화면 전환 또는 해제 |
-| `V` | VR 시작 또는 종료 |
 
 **설정 → 재생**에서 PC와 VR의 스킵 간격을 각각 1~60초로 설정할 수 있습니다. 기본값은 PC 5초, VR 10초입니다.
 

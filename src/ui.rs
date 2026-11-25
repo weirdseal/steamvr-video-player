@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use egui::{Align, Align2, Color32, FontFamily, Layout, RichText, Vec2};
+use egui::{Align, Align2, FontFamily, Layout, RichText, Vec2};
 
 use crate::graphics::{Frame, Triangle};
 use crate::i18n::{Language, Text};
@@ -57,6 +57,7 @@ pub enum Action {
     ProbeVr,
     ToggleVr,
     ExitVr,
+    DismissError(Arc<str>),
     Preferences {
         before: Preferences,
         edited: Preferences,
@@ -68,7 +69,6 @@ pub struct PlayerUi {
     pub preferences: Preferences,
     pub phase: VrPhase,
     pub runtime: Option<RuntimeInfo>,
-    pub vr_error: Option<String>,
     pub media_available: bool,
     pub picker_open: bool,
     settings_open: bool,
@@ -92,7 +92,6 @@ impl PlayerUi {
             preferences,
             phase: VrPhase::Idle,
             runtime: None,
-            vr_error: None,
             media_available,
             picker_open: false,
             settings_open: false,
@@ -140,7 +139,18 @@ impl PlayerUi {
                     .show_inside(ui, |ui| self.transport(ui, fullscreen, &mut actions));
                 self.picture(ui, frame, preview, &mut actions);
             });
-        if self.settings_open {
+        if let Some(error) = &self.playback.error {
+            actions.clear();
+            self.scrub = None;
+            let width = (ctx.content_rect().width() - 52.0).clamp(80.0, 470.0);
+            let dialog = theme::modal(ctx, "player-error").show(ctx, |ui| {
+                ui.set_width(width);
+                error_contents(ui, self.preferences.language, error, 1.0)
+            });
+            if dialog.inner || dialog.backdrop_response.clicked() {
+                actions.push(Action::DismissError(error.clone()));
+            }
+        } else if self.settings_open {
             self.settings_dialog(ctx);
         }
         actions
@@ -154,13 +164,13 @@ impl PlayerUi {
         actions: &mut Vec<Action>,
     ) {
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
-        let corners = egui::CornerRadius {
-            nw: 10,
-            ne: 10,
-            ..egui::CornerRadius::ZERO
-        };
-        ui.painter().rect_filled(rect, corners, theme::VIDEO_MATTE);
         if let Some(frame) = frame {
+            let corners = egui::CornerRadius {
+                nw: 10,
+                ne: 10,
+                ..egui::CornerRadius::ZERO
+            };
+            ui.painter().rect_filled(rect, corners, theme::VIDEO_MATTE);
             let picture = fit(rect, frame.aspect());
             if picture.is_positive() {
                 ui.painter().add(egui::PaintCallback {
@@ -199,40 +209,30 @@ impl PlayerUi {
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         let language = self.preferences.language;
-        let colors = &theme::COLORS;
         let size = ctx.content_rect().size();
-        let dialog = egui::Modal::new(egui::Id::new("player-settings"))
-            .frame(
-                egui::Frame::new()
-                    .fill(colors.background)
-                    .corner_radius(10)
-                    .inner_margin(egui::Margin::same(14))
-                    .shadow(ctx.style().visuals.window_shadow),
-            )
-            .backdrop_color(Color32::from_black_alpha(110))
-            .show(ctx, |ui| {
-                ui.set_width((size.x - 52.0).min(520.0));
-                ui.set_height((size.y - 48.0).clamp(120.0, 340.0));
-                let close = ui
-                    .horizontal(|ui| {
-                        ui.heading(language.text(Text::Settings));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add(IconButton::new(Icon::Close, language.text(Text::Close)))
-                                .clicked()
-                        })
-                        .inner
+        let dialog = theme::modal(ctx, "player-settings").show(ctx, |ui| {
+            ui.set_width((size.x - 52.0).min(520.0));
+            ui.set_height((size.y - 48.0).clamp(120.0, 340.0));
+            let close = ui
+                .horizontal(|ui| {
+                    ui.heading(language.text(Text::Settings));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add(IconButton::new(Icon::Close, language.text(Text::Close)))
+                            .clicked()
                     })
-                    .inner;
-                ui.add_space(5.0);
-                egui::ScrollArea::vertical()
-                    .max_height(ui.available_height())
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        settings_ui::draw(ui, &mut self.preferences, &mut self.settings_page, 1.0)
-                    });
-                close
-            });
-        self.settings_open = !dialog.inner && !dialog.should_close();
+                    .inner
+                })
+                .inner;
+            ui.add_space(5.0);
+            egui::ScrollArea::vertical()
+                .max_height(ui.available_height())
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    settings_ui::draw(ui, &mut self.preferences, &mut self.settings_page, 1.0)
+                });
+            close
+        });
+        self.settings_open = !dialog.inner && !dialog.backdrop_response.clicked();
     }
 
     fn header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -247,7 +247,7 @@ impl PlayerUi {
                 if ui
                     .add_enabled(
                         self.media_available && !self.picker_open,
-                        IconButton::new(Icon::Folder, text(Text::OpenFileShortcut))
+                        IconButton::new(Icon::Folder, text(Text::OpenFile))
                             .caption(text(Text::OpenFile))
                             .size([103.0, tool_size[1]]),
                     )
@@ -279,7 +279,6 @@ impl PlayerUi {
                         .fit_caption(ui, tool_size[1]);
                     if ui
                         .add_enabled(self.media_available && self.phase.can_toggle(), vr)
-                        .on_hover_text("V")
                         .clicked()
                     {
                         actions.push(Action::ToggleVr);
@@ -322,12 +321,6 @@ impl PlayerUi {
                     );
                 }
             });
-        }
-        for error in [self.vr_error.as_deref(), self.playback.error.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            ui.label(error);
         }
     }
 
@@ -518,12 +511,14 @@ pub fn playback_buttons(
                 ("+", "→")
             };
             let label = format!("{sign}{interval}{}", text(Text::SecondsSuffix));
-            let response = ui.add_enabled(
-                enabled,
-                egui::Button::new(RichText::new(label).size(13.0 * scale))
-                    .frame_when_inactive(false)
-                    .min_size(Vec2::new(SKIP_WIDTH, 34.0) * scale),
-            );
+            let response = ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::new(RichText::new(label).size(13.0 * scale))
+                        .frame_when_inactive(false)
+                        .min_size(Vec2::new(SKIP_WIDTH, 34.0) * scale),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             if shortcuts {
                 response.on_hover_text(shortcut)
             } else {
@@ -564,6 +559,33 @@ pub fn configure(ctx: &egui::Context) {
     ctx.set_style_of(egui::Theme::Dark, theme::style());
 }
 
+pub fn error_contents(ui: &mut egui::Ui, language: Language, message: &str, scale: f32) -> bool {
+    ui.label(RichText::new(language.text(Text::Error)).size(23.0 * scale));
+    let button_size = Vec2::new(88.0, 34.0) * scale;
+    let confirm_gap = 14.0 * scale;
+    let message_height =
+        (ui.available_height() - button_size.y - confirm_gap - 2.0 * ui.spacing().item_spacing.y)
+            .clamp(30.0 * scale, 180.0 * scale);
+    egui::ScrollArea::vertical()
+        .id_salt(message)
+        .max_height(message_height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(message).size(14.0 * scale)).wrap());
+        });
+    ui.add_space(confirm_gap);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.add_sized(
+            button_size,
+            egui::Button::new(RichText::new(language.text(Text::Confirm)).size(14.0 * scale))
+                .frame_when_inactive(false),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+    })
+    .inner
+}
+
 fn fit(rect: egui::Rect, aspect: f32) -> egui::Rect {
     let width = rect.width().min(rect.height() * aspect);
     egui::Rect::from_center_size(rect.center(), Vec2::new(width, width / aspect))
@@ -592,6 +614,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn error_confirmation_has_a_hand_cursor_and_closes() {
+        const MESSAGE: &str = "The video could not be opened";
+        let ctx = egui::Context::default();
+        configure(&ctx);
+        let mut confirmed = false;
+        let mut draw = |ctx: &egui::Context| {
+            confirmed = theme::modal(ctx, "player-error")
+                .show(ctx, |ui| {
+                    ui.set_width(420.0);
+                    error_contents(ui, Language::English, MESSAGE, 1.0)
+                })
+                .inner;
+        };
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(570.0, 390.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input.clone(), &mut draw);
+        let output = ctx.run(input.clone(), &mut draw);
+        let text_bounds = |label| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+        };
+        let message = text_bounds(MESSAGE).expect("The error message is visible");
+        let confirmation = text_bounds(Language::English.text(Text::Confirm))
+            .expect("The confirmation button is visible");
+        assert!(confirmation.top() - message.bottom() >= 24.0);
+        let point = confirmation.center();
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Rect(rect) if rect.rect.contains(point)
+                && rect.rect.width() <= 100.0
+                && rect.fill != egui::Color32::TRANSPARENT
+        )));
+        input.events.push(egui::Event::PointerMoved(point));
+        let output = ctx.run(input.clone(), &mut draw);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let _ = ctx.run(input, draw);
+        assert!(confirmed);
+    }
+
+    #[test]
+    fn dismissing_an_old_error_preserves_the_new_popup() {
+        let mut playback = Playback::default();
+        playback.set_error("File could not be opened".to_owned());
+        let first = playback.error.clone().unwrap();
+        assert!(playback.dismiss_error(&first));
+        playback.set_error("File could not be opened".to_owned());
+        assert!(!playback.dismiss_error(&first));
+        let current = playback.error.clone().unwrap();
+        assert!(playback.dismiss_error(&current));
+        assert!(playback.error.is_none());
+    }
+
+    #[test]
     fn shared_font_keeps_time_readouts_aligned() {
         let ctx = egui::Context::default();
         configure(&ctx);
@@ -605,7 +700,7 @@ mod tests {
                             .layout_no_wrap(
                                 text.to_owned(),
                                 egui::FontId::proportional(size),
-                                Color32::WHITE,
+                                egui::Color32::WHITE,
                             )
                             .size()
                             .x

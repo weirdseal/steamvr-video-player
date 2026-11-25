@@ -1,9 +1,10 @@
-use egui::{Color32, FontId, Response, Slider, Stroke, Style, TextStyle, Ui, Visuals, vec2};
+use egui::{
+    Color32, FontId, Painter, Rect, Response, Slider, Stroke, Style, TextStyle, Ui, Visuals, vec2,
+};
 
 pub struct Colors {
     pub background: Color32,
     pub control: Color32,
-    pub field: Color32,
     pub hover: Color32,
     pub pressed: Color32,
     pub text: Color32,
@@ -17,7 +18,6 @@ pub struct Colors {
 pub const COLORS: Colors = Colors {
     background: Color32::from_gray(11),
     control: Color32::from_gray(33),
-    field: Color32::from_gray(17),
     hover: Color32::from_gray(35),
     pressed: Color32::from_gray(47),
     text: Color32::from_gray(245),
@@ -30,6 +30,28 @@ pub const COLORS: Colors = Colors {
 
 pub const VIDEO_MATTE: Color32 = Color32::BLACK;
 pub const ON_VIDEO: Color32 = Color32::from_gray(207);
+
+pub fn selection_mark(painter: &Painter, rect: Rect) {
+    let half_width = (rect.height() * 0.22).min(rect.width() * 0.25);
+    let center = rect.center_bottom() - vec2(0.0, 2.0);
+    painter.hline(
+        (center.x - half_width)..=(center.x + half_width),
+        center.y,
+        Stroke::new(1.5_f32, COLORS.accent),
+    );
+}
+
+pub fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::new(id))
+        .frame(
+            egui::Frame::new()
+                .fill(COLORS.background)
+                .corner_radius(10)
+                .inner_margin(egui::Margin::same(14))
+                .shadow(ctx.style().visuals.window_shadow),
+        )
+        .backdrop_color(Color32::from_black_alpha(110))
+}
 
 pub fn style() -> Style {
     let colors = &COLORS;
@@ -57,7 +79,7 @@ pub fn style() -> Style {
     visuals.window_corner_radius = 10.into();
     visuals.window_stroke = Stroke::NONE;
     visuals.menu_corner_radius = 8.into();
-    visuals.extreme_bg_color = colors.field;
+    visuals.extreme_bg_color = colors.background;
     visuals.faint_bg_color = Color32::TRANSPARENT;
     visuals.weak_text_color = Some(colors.muted);
     visuals.hyperlink_color = colors.accent;

@@ -156,6 +156,7 @@ struct Desktop {
     repaint: Option<Instant>,
     modifiers: ModifiersState,
     closing: bool,
+    video_render_failed: bool,
     gl: Arc<glow::Context>,
     display: Display,
     config: Config,
@@ -265,6 +266,7 @@ impl Desktop {
             repaint: None,
             modifiers: ModifiersState::empty(),
             closing: false,
+            video_render_failed: false,
             gl,
             display,
             config,
@@ -293,7 +295,7 @@ impl Desktop {
                 self.window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.redraw(),
-            WindowEvent::DroppedFile(path) if !self.closing => self.open(path),
+            WindowEvent::DroppedFile(path) if !self.closing => self.action(Action::OpenFile(path)),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput {
                 event,
@@ -315,17 +317,13 @@ impl Desktop {
     }
 
     fn shortcut(&self, key: KeyCode, first_press: bool, consumed: bool) -> Option<Action> {
-        if self.modifiers.control_key() && key == KeyCode::KeyO && first_press {
-            return Some(Action::Open);
+        if !self.modifiers.is_empty() {
+            return None;
         }
         if key == KeyCode::F11 && first_press {
             return Some(Action::ToggleFullscreen);
         }
-        if consumed
-            || self
-                .modifiers
-                .intersects(ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SUPER)
-        {
+        if consumed {
             return None;
         }
         let seek = f64::from(self.ui.preferences.pc_seek);
@@ -337,7 +335,6 @@ impl Desktop {
             KeyCode::ArrowUp => Some(Action::VolumeBy(volume)),
             KeyCode::ArrowDown => Some(Action::VolumeBy(-volume)),
             KeyCode::KeyM if first_press => Some(Action::ToggleMute),
-            KeyCode::KeyV if first_press => Some(Action::ToggleVr),
             KeyCode::KeyF if first_press => Some(Action::ToggleFullscreen),
             KeyCode::Escape if first_press && self.window.fullscreen().is_some() => {
                 Some(Action::ToggleFullscreen)
@@ -399,6 +396,7 @@ impl Desktop {
                 self.ui.playback.begin_load();
                 self.ui.playback.file = Some(path);
                 self.ui.playback.error = None;
+                self.video_render_failed = false;
                 self.find_nearby();
                 let paused = if self.ui.preferences.play_on_open {
                     "no"
@@ -407,7 +405,7 @@ impl Desktop {
                 };
                 self.command(&["set", "pause", paused]);
             }
-            Err(error) => self.media_error(format!("{} ({error:#})", tr(Text::VideoOpenFailed))),
+            Err(error) => self.show_error(format!("{} ({error:#})", tr(Text::VideoOpenFailed))),
         }
         self.window.request_redraw();
     }
@@ -446,7 +444,7 @@ impl Desktop {
             self.find_nearby();
         }
         if let Err(error) = preferences.save() {
-            self.media_error(format!("{} ({error:#})", tr(Text::SettingsSaveFailed)));
+            self.show_error(format!("{} ({error:#})", tr(Text::SettingsSaveFailed)));
         }
         self.window.request_redraw();
     }
@@ -468,7 +466,7 @@ impl Desktop {
             });
         match spawn {
             Ok(_) => self.ui.picker_open = true,
-            Err(error) => self.media_error(format!("{} ({error})", tr(Text::FilePickerFailed))),
+            Err(error) => self.show_error(format!("{} ({error})", tr(Text::FilePickerFailed))),
         }
         self.window.request_redraw();
     }
@@ -477,13 +475,14 @@ impl Desktop {
         if let Some(mpv) = &self.mpv
             && let Err(error) = mpv.command(args)
         {
-            self.media_error(format!("{} ({error:#})", tr(Text::PlaybackCommandFailed)));
+            self.show_error(format!("{} ({error:#})", tr(Text::PlaybackCommandFailed)));
         }
     }
 
-    fn media_error(&mut self, error: String) {
+    fn show_error(&mut self, error: String) {
         self.ui.playback.set_error(error);
         self.video.playback(&self.ui.playback);
+        self.window.request_redraw();
     }
 
     fn media_events(&mut self) {
@@ -519,15 +518,25 @@ impl Desktop {
         } else {
             mpv.render(None)
         };
+        let previously_failed = std::mem::replace(&mut self.video_render_failed, result.is_err());
         if let Err(error) = result {
             self.video.clear();
-            self.media_error(format!("{} ({error:#})", tr(Text::VideoDisplayFailed)));
+            if !previously_failed {
+                self.show_error(format!("{} ({error:#})", tr(Text::VideoDisplayFailed)));
+            }
         }
     }
 
     fn action(&mut self, action: Action) {
         let playback = &self.ui.playback;
         match action {
+            Action::DismissError(error) => {
+                if self.ui.playback.dismiss_error(&error) {
+                    self.video.playback(&self.ui.playback);
+                    self.window.request_redraw();
+                }
+            }
+            _ if playback.error.is_some() => {}
             Action::Preferences { before, edited } => {
                 let previous = self.ui.preferences;
                 self.ui.preferences.apply_edit(before, edited);
@@ -580,7 +589,6 @@ impl Desktop {
     }
 
     fn probe_vr(&mut self) {
-        self.ui.vr_error = None;
         self.ui.runtime = None;
         match Worker::probe(self.proxy.clone()) {
             Ok(worker) => {
@@ -588,7 +596,7 @@ impl Desktop {
                 self.ui.phase = VrPhase::Probing;
             }
             Err(error) => {
-                self.ui.vr_error = Some(format!("{} ({error:#})", tr(Text::OpenXrProbeStartFailed)))
+                self.show_error(format!("{} ({error:#})", tr(Text::OpenXrProbeStartFailed)))
             }
         }
         self.window.request_redraw();
@@ -599,7 +607,6 @@ impl Desktop {
             self.stop_vr();
             return;
         }
-        self.ui.vr_error = None;
         self.ui.runtime = None;
         let start = self
             .video
@@ -617,7 +624,7 @@ impl Desktop {
             }
             Err(error) => {
                 self.video.stop_sharing();
-                self.ui.vr_error = Some(format!("{} ({error:#})", tr(Text::VrStartFailed)));
+                self.show_error(format!("{} ({error:#})", tr(Text::VrStartFailed)));
             }
         }
         self.window.request_redraw();
@@ -667,7 +674,7 @@ impl Desktop {
                 self.ui.phase = VrPhase::Idle;
                 match result {
                     Ok(info) => self.ui.runtime = Some(info),
-                    Err(error) => self.ui.vr_error = Some(error),
+                    Err(error) => self.show_error(error),
                 }
             }
             vr::Message::PrepareGraphics(requirements, reply) => {
@@ -691,7 +698,7 @@ impl Desktop {
                     self.action(action);
                 }
             }
-            vr::Message::ControlsUnavailable(error) => self.ui.vr_error = Some(error),
+            vr::Message::Error(error) => self.show_error(error),
             vr::Message::Finished(result) => {
                 if let Some(worker) = self.vr.take() {
                     worker.join();
@@ -699,7 +706,7 @@ impl Desktop {
                 self.video.stop_sharing();
                 if let Err(error) = result {
                     self.ui.runtime = None;
-                    self.ui.vr_error = Some(error);
+                    self.show_error(error);
                 }
                 self.ui.phase = VrPhase::Idle;
                 log::info!(

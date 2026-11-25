@@ -61,7 +61,7 @@ pub(super) enum BrowserAction {
 enum Listing {
     Loading(Receiver<io::Result<Vec<Entry>>>),
     Ready(Vec<Entry>),
-    Failed(io::Error),
+    Failed(Option<io::Error>),
 }
 
 impl Listing {
@@ -73,7 +73,7 @@ impl Listing {
                 let _ = sender.send(files::list(&location, sort));
             }) {
             Ok(_) => Self::Loading(receiver),
-            Err(error) => Self::Failed(error),
+            Err(error) => Self::Failed(Some(error)),
         }
     }
 }
@@ -158,19 +158,22 @@ impl FileBrowser {
         }
     }
 
-    pub fn poll(&mut self) {
-        let Listing::Loading(receiver) = &self.listing else {
-            return;
-        };
-        self.listing = match receiver.try_recv() {
-            Ok(Ok(entries)) => Listing::Ready(entries),
-            Ok(Err(error)) => Listing::Failed(error),
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                Listing::Failed(io::Error::other(tr(Text::FolderListingInterrupted)))
-            }
-        };
-        self.revision += 1;
+    pub fn poll(&mut self) -> Option<io::Error> {
+        if let Listing::Loading(receiver) = &self.listing {
+            self.listing = match receiver.try_recv() {
+                Ok(Ok(entries)) => Listing::Ready(entries),
+                Ok(Err(error)) => Listing::Failed(Some(error)),
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    Listing::Failed(Some(io::Error::other(tr(Text::FolderListingInterrupted))))
+                }
+            };
+            self.revision += 1;
+        }
+        match &mut self.listing {
+            Listing::Failed(error) => error.take(),
+            _ => None,
+        }
     }
 
     pub fn revision(&self) -> u64 {
@@ -275,18 +278,12 @@ impl FileBrowser {
                             Listing::Loading(_) => {
                                 ui.label(RichText::new(text(Text::FolderReading)).size(25.0));
                             }
-                            Listing::Failed(error) => {
-                                ui.add(
-                                    Label::new(
-                                        RichText::new(format!(
-                                            "{} ({error})",
-                                            text(Text::FolderOpenFailed)
-                                        ))
-                                        .size(25.0),
-                                    )
-                                    .truncate(),
-                                );
-                                if ui.add(button(text(Text::Retry), 143.0)).clicked() {
+                            Listing::Failed(_) => {
+                                if ui
+                                    .add(button(text(Text::Retry), 143.0))
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
                                     action = Some(BrowserAction::Browse(self.location.clone()));
                                 }
                             }
@@ -376,7 +373,10 @@ fn entry_region(ui: &mut Ui, entry: &Entry, size: Vec2) -> (Rect, Response) {
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &entry.name)
     });
-    (rect, response)
+    (
+        rect,
+        response.on_hover_cursor(egui::CursorIcon::PointingHand),
+    )
 }
 
 fn entry_icon(entry: &Entry, in_folder: bool, colors: &theme::Colors) -> (Icon, Color32) {
