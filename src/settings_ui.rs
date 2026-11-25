@@ -397,7 +397,7 @@ fn stepper(
                 .clicked();
             ui.add_sized(
                 Vec2::new(62.0 * scale, size.y),
-                egui::Label::new(caption(value, scale).monospace()),
+                egui::Label::new(caption(value, scale)),
             );
             let increase = ui
                 .add_enabled(

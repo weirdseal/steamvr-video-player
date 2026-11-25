@@ -211,7 +211,7 @@ impl PlayerUi {
             )
             .backdrop_color(Color32::from_black_alpha(110))
             .show(ctx, |ui| {
-                ui.set_width((size.x - 52.0).min(670.0));
+                ui.set_width((size.x - 52.0).min(520.0));
                 ui.set_height((size.y - 48.0).clamp(120.0, 340.0));
                 let close = ui
                     .horizontal(|ui| {
@@ -341,7 +341,6 @@ impl PlayerUi {
         let time = |seconds| {
             egui::Label::new(
                 RichText::new(time_label(seconds, show_hours))
-                    .monospace()
                     .size(12.0)
                     .color(colors.muted),
             )
@@ -542,28 +541,24 @@ pub fn playback_buttons(
 
 pub fn configure(ctx: &egui::Context) {
     static SEGOE_UI: std::sync::OnceLock<Option<Arc<egui::FontData>>> = std::sync::OnceLock::new();
+    const FONT_NAME: &str = "Noto Sans KR";
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
-        "player".to_owned(),
+        FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
             "../assets/NotoSansKR-Player.ttf"
         ))),
     );
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
-    proportional.insert(0, "player".to_owned());
+    proportional.insert(0, FONT_NAME.to_owned());
     if let Some(segoe) = SEGOE_UI.get_or_init(|| {
         let windows = PathBuf::from(std::env::var_os("WINDIR")?);
         let data = std::fs::read(windows.join("Fonts").join("segoeui.ttf")).ok()?;
         Some(Arc::new(egui::FontData::from_owned(data)))
     }) {
-        fonts.font_data.insert("segoe".to_owned(), segoe.clone());
-        proportional.insert(0, "segoe".to_owned());
+        fonts.font_data.insert("Segoe UI".to_owned(), segoe.clone());
+        proportional.insert(1, "Segoe UI".to_owned());
     }
-    fonts
-        .families
-        .entry(FontFamily::Monospace)
-        .or_default()
-        .push("player".to_owned());
     ctx.set_fonts(fonts);
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_style_of(egui::Theme::Dark, theme::style());
@@ -597,12 +592,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_dialog_keeps_its_height_across_pages() {
+    fn shared_font_keeps_time_readouts_aligned() {
+        let ctx = egui::Context::default();
+        configure(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|fonts| {
+                let family = &fonts.definitions().families[&FontFamily::Proportional];
+                assert_eq!(family[0], "Noto Sans KR");
+                for size in [12.0, 21.0] {
+                    let mut width = |text: &str| {
+                        fonts
+                            .layout_no_wrap(
+                                text.to_owned(),
+                                egui::FontId::proportional(size),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    };
+                    assert_eq!(width("01:12:34"), width("98:56:07"));
+                }
+            });
+        });
+    }
+    use crate::i18n::Language;
+
+    #[test]
+    fn settings_dialog_stays_compact_across_pages() {
         let id = egui::Id::new("player-settings");
-        for size in [
-            Vec2::new(570.0, 300.0),
-            Vec2::new(570.0, 390.0),
-            Vec2::new(1080.0, 720.0),
+        for (size, language) in [
+            (Vec2::new(570.0, 300.0), Language::Korean),
+            (Vec2::new(570.0, 390.0), Language::English),
+            (Vec2::new(1080.0, 720.0), Language::Korean),
+            (Vec2::new(1080.0, 720.0), Language::English),
         ] {
             let ctx = egui::Context::default();
             configure(&ctx);
@@ -613,6 +635,7 @@ mod tests {
             };
             let mut player = PlayerUi::new(true, None, Preferences::default());
             player.settings_open = true;
+            player.preferences.language = language;
             player.preferences.vr.stereo = crate::graphics::Stereo::SideBySide;
             let mut height = None;
             for page in [
@@ -627,6 +650,10 @@ mod tests {
                 let rect = ctx.memory(|memory| memory.area_rect(id)).unwrap();
                 let expected_height = *height.get_or_insert(rect.height());
                 assert!((rect.height() - expected_height).abs() <= 1.0);
+                assert!(
+                    rect.width() <= 550.0,
+                    "Settings dialog is too wide: {rect:?}"
+                );
                 assert!(screen.contains_rect(rect));
             }
         }

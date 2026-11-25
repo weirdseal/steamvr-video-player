@@ -23,7 +23,8 @@ use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::{Fullscreen, Theme, Window, WindowId};
+use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+use winit::window::{Fullscreen, Icon as WindowIcon, Theme, Window, WindowId};
 
 use crate::files::{self, VIDEO_EXTENSIONS};
 use crate::graphics::{Triangle, Video, check_opengl};
@@ -175,6 +176,10 @@ impl Desktop {
                 .with_inner_size(LogicalSize::new(1080, 720))
                 .with_min_inner_size(LogicalSize::new(570, 390))
                 .with_theme(Some(Theme::Dark))
+                .with_window_icon(WindowIcon::from_resource(1, None).ok())
+                .with_taskbar_icon(
+                    WindowIcon::from_resource(1, Some(PhysicalSize::new(256, 256))).ok(),
+                )
                 .with_visible(false),
         )?;
         let handle = window.window_handle()?.as_raw();

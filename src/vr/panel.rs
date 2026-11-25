@@ -816,7 +816,6 @@ fn draw_playback(
     let time = |seconds| {
         egui::Label::new(
             RichText::new(time_label(seconds, hours))
-                .monospace()
                 .size(21.0)
                 .color(colors.muted),
         )
@@ -952,7 +951,7 @@ fn draw_volume(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         format!("{:.0}%", playback.volume),
-        egui::FontId::monospace(21.0),
+        egui::FontId::proportional(21.0),
         colors.text,
     );
 

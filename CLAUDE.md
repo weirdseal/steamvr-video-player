@@ -1,6 +1,6 @@
 # SteamVR Video Player Development Conventions
 
-SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. It uses egui, libmpv, and OpenGL with WGL, and sends video to SteamVR through OpenXR. Build instructions and player controls are in the [README](README.md).
+SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. It uses egui, libmpv, and OpenGL with WGL, and sends video to SteamVR through OpenXR. See the [player README](README.md) and the [build guide](build/README.md).
 
 ## Code Organization
 
@@ -13,9 +13,9 @@ SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. I
 
 ## Localization
 
-- Add user-facing labels, help text, accessibility names, and error messages to both UTF-8 catalogs, `locales/ko.json` and `locales/en.json`, under the same PascalCase key. Edit wording in the relevant language file. `build.rs` checks that both catalogs have the same keys and generates the Rust `Text` enum and string tables.
+- Add user-facing labels, help text, accessibility names, and error messages to both UTF-8 catalogs, `locales/ko.json` and `locales/en.json`, under the same PascalCase key. Edit wording in the relevant language file. `build/build.rs` checks that both catalogs have the same keys and generates the Rust `Text` enum and string tables.
 - Resolve UI strings with `language.text(key)` using the view's current `Language`. Use `tr(key)` in error handling and file dialogs that lack an explicit language argument. Give widgets stable IDs independent of language. Keep filenames, shortcut names, upstream error details, and diagnostic logs in their original form.
-- When adding Korean text, check that the embedded font subset covers the new glyphs in both the desktop and VR views.
+- Use the shared Noto Sans KR font for player text and numeric readouts in both the desktop and VR views. Check that the embedded font subset covers new localized text.
 
 ## Playback and VR
 
@@ -28,5 +28,5 @@ SteamVR Video Player is a Rust desktop video player for Windows 10 and 11 x64. I
 
 - Use the repository's `target` directory for local and verification builds.
 - Wire changes through the existing module entry points. Use Rust ownership and `Drop` to manage native resource lifetimes. Document the type, alignment, and lifetime requirements of FFI pointer casts.
-- Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`. For Windows GNU builds, use the toolchain and target described in the README. Package the executable and its DLLs with `scripts/build.ps1`.
+- Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`. Use the Windows toolchain and commands in [build/README.md](build/README.md).
 - Verify UI and VR changes with real videos and SteamVR. Check that thumbnails match their source clips and that both browser views can scroll and select entries in a large folder. Record which checks used a physical controller and which used automated input.

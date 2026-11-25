@@ -2,9 +2,13 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
+    let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
+    embed_icon(&output);
+
     let english = catalog("en");
     let korean = catalog("ko");
     let missing_ko: Vec<_> = english
@@ -32,8 +36,33 @@ fn main() {
         }
         source.push_str("];\n");
     }
-    let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
     fs::write(output.join("translations.rs"), source).expect("Could not write translations.rs");
+}
+
+fn embed_icon(output: &Path) {
+    const RESOURCE: &str = "build/player.rc";
+    println!("cargo:rerun-if-changed={RESOURCE}");
+    println!("cargo:rerun-if-changed=build/player.ico");
+
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+        let object = output.join("player-icon.o");
+        // A relative input path avoids spaces in the windres preprocessor command.
+        let status = Command::new("windres")
+            .args(["-J", "rc", "-O", "coff", RESOURCE])
+            .arg(&object)
+            .status()
+            .expect("Could not run windres from MinGW-w64");
+        assert!(
+            status.success(),
+            "windres failed to compile the player icon"
+        );
+        println!("cargo:rustc-link-arg={}", object.display());
+    } else {
+        winresource::WindowsResource::new()
+            .set_resource_file(RESOURCE)
+            .compile()
+            .expect("Could not embed the Windows application icon");
+    }
 }
 
 fn catalog(locale: &str) -> BTreeMap<String, String> {
